@@ -1,57 +1,48 @@
-Rebuilding Ryujinx Stereo 0.1.0
+Building Ryujinx Stereo 0.2.0 experimental (Windows x64)
 
-1. Extract source/Ryujinx-Stereo-source.zip into a working folder.
-2. Install .NET SDK 9.0.319 or a compatible .NET 9 SDK. Package restore needs
-   the public nuget.org feed declared in nuget.config.
-3. In the source folder, run:
-   dotnet publish src/Ryujinx/Ryujinx.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:RuntimeFrameworkVersion=9.0.21 -o build
-4. Copy build's runtime files into the package's emulator folder, preserving
-   your own data separately. Keep the standalone StereoSettings.json and
-   clean portable/Config.json when assembling a fresh distributable.
-5. Compile release-tools/StereoLauncher.cs with Windows' .NET Framework C#
-   compiler, targeting winexe x64 and referencing System.Windows.Forms.dll:
-   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /platform:x64 /optimize+ /reference:System.Windows.Forms.dll /out:"Ryujinx Stereo.exe" release-tools\StereoLauncher.cs
+Use .NET SDK 9.0.319 or compatible .NET 9 SDK. Restore uses nuget.org.
+From the repository root:
+  powershell -ExecutionPolicy Bypass -File release-tools/Build-Stereo.ps1
 
-Baseline source: https://github.com/Leuconoe/Ryubing
-Baseline commit: 80ab0f96b95dc13f5bdb9f365a3363d25040e236
-The complete modified snapshot is supplied so the baseline host need not
-remain online. native-stereo.patch is a readable baseline-to-modified diff.
-The release uses the tested application's existing runtime binaries, not
-newly compiled emulator assemblies. File hashes are in manifest.json.
+Publishes src/Ryujinx/Ryujinx.csproj as the library/Mario engine and
+zelda-src/Ryujinx/Ryujinx.csproj under engines/zelda. Shared sources link
+stereo-ui/ and stereo-recording/. Output: build/package. Self-contained,
+with trimming and single-file packing disabled. Do not overwrite a running
+package or any used portable configuration.
 
-Native library sources and linkage
-The FFmpeg DLLs report version 6.1.2 and this configuration:
+Optional native panel bridge: install VS C++ tools, CMake and LeiaSR SDK.
+  powershell -ExecutionPolicy Bypass -File release-tools/Build-Stereo.ps1 -LeiaSdk "D:/SDK/LeiaSR-1.36.2"
+Builds native/LeiaBridge and installs ZeldaLeiaBridge.dll in both engines.
+The Leia runtime must be installed separately with its DLL directory on PATH.
+No proprietary SDK/runtime is distributed. Generic SBS viewers can use
+profiles with direct_panel_output=false.
+
+Optional hidden portable launcher (Windows .NET Framework csc.exe):
+  csc /nologo /target:winexe /platform:x64 /optimize+ /reference:System.Windows.Forms.dll /out:"build/package/Ryujinx Stereo.exe" release-tools/UnifiedLauncher.cs
+Starts Ryujinx.exe with --root-data-dir pointing to portable/.
+Legacy StereoLauncher.cs belongs to 0.1.0 and is not used now.
+
+Release packaging:
+release-tools/package.py accepts --runtime, --licenses, --native-sources,
+--source-zip, --launcher and --output. Use a clean git archive as source ZIP.
+Only runtime files, culture resources, clean configuration, generic stereo
+profiles, licenses and source are copied. No used portable profile, logs,
+keys, firmware, ROMs, caches, controller IDs or recordings are copied.
+The manifest hashes the exact runtime files included in the release.
+
+Recording: WASAPI loopback and NVIDIA h264_nvenc. Supply a compatible FFmpeg
+executable separately; none is bundled. F10 waits for MP4 finalization before
+graceful shutdown. Output is pre-weave left/right SBS.
+
+Unchanged decoder dependencies:
+FFmpeg 6.1.2 DLLs (LGPL 2.1 or later), shared decoder-only build:
   --target-os=mingw32 --disable-debug --disable-all --disable-autodetect --enable-shared --enable-avcodec --enable-avutil --enable-decoder='h264,vp8,vp9' --prefix=bin/build
-They report "LGPL version 2.1 or later". The original NuGet package is
-Ryujinx.Graphics.Nvdec.Dependencies.AllArch 6.1.2-build3. The corresponding
-upstream FFmpeg source is bundled as native/ffmpeg-6.1.2.tar.xz, including
-its configure/build scripts and licenses. Use a MinGW-w64 toolchain and
-those configure options (plus the appropriate compiler/cross-prefix for
-your host), then make and make install to rebuild the DLLs.
-Source origin: https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz
+Source: https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz
+OpenAL Soft 1.21.0, shared Windows x64 library (LIBTYPE=SHARED).
+Source: https://github.com/kcat/openal-soft/releases/tag/1.21.0
+Release source/native contains corresponding source archives and build files.
+Use MinGW-w64 / CMake and their upstream build guides. Shared DLLs remain
+replaceable. Package licenses and dependency notices are in licenses/.
 
-OpenAL32.dll is supplied by Ryujinx.Audio.OpenAL.Dependencies 1.21.0.1.
-OpenAL Soft 1.21.0 source and its CMake build files are bundled as
-native/openal-soft-1.21.0.tar.gz. Follow the included upstream build guide;
-build a shared Windows x64 library (LIBTYPE=SHARED). The application also
-supports SDL2 audio, which is the default.
-Source origin: https://github.com/kcat/openal-soft/releases/tag/1.21.0
-
-These shared native libraries have not been modified by the stereo work.
-They are dynamically linked, remain separate DLLs and can be replaced with
-compatible user-built versions. Application source and notices are supplied
-without restrictions on debugging modifications to those libraries.
-Managed dependency versions, authors, license declarations and available
-package notices are in licenses/dependencies.json and licenses/packages/.
-The .NET runtime license and third-party notices are under licenses/dotnet/.
-
-Stereo implementation
-NativeStereo controls same-state eye projection and SBS presentation.
-StereoProjectedVaryings and reconstruction passes align screen-space effects
-to each eye. Layered storage and instanced draws reduce repeated GL work.
-StereoArraySampling rewrites eligible sampled scene textures to eye layers.
-The launcher enables these environment flags before loading any renderer.
-StereoSettings.json supplies live controls and keeps shader cache variants
-separate. This release does not enable the experimental combined-threading
-override. The previous two-draw layered path remains available via the
-launcher's --safe-stereo switch. All sources for that launcher are included.
+Baseline https://github.com/Leuconoe/Ryubing
+Commit 80ab0f96b95dc13f5bdb9f365a3363d25040e236

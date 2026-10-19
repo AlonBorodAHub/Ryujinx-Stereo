@@ -88,6 +88,7 @@ namespace Ryujinx.Ava.Systems
         private readonly GraphicsDebugLevel _glLogLevel;
         private float _newVolume;
         private KeyboardHotkeyState _prevHotkeyState;
+        private bool _recordF9, _recordF10;
 
         private long _lastCursorMoveTime;
         private bool _isCursorInRenderer = true;
@@ -1257,6 +1258,10 @@ namespace Ryujinx.Ava.Systems
                     }
                 });
 
+                bool recordF9 = _keyboardInterface.IsPressed(Key.F9), recordF10 = _keyboardInterface.IsPressed(Key.F10);
+                if (recordF10 && !_recordF10) Dispatcher.UIThread.Post(() => Ryujinx.Ava.Stereo.StereoRecordingUi.Stop(_viewModel.Window));
+                else if (recordF9 && !_recordF9) Ryujinx.Graphics.OpenGL.SbsRecording.Start();
+                _recordF9 = recordF9; _recordF10 = recordF10;
                 KeyboardHotkeyState currentHotkeyState = GetHotkeyState();
 
                 if (currentHotkeyState != _prevHotkeyState)

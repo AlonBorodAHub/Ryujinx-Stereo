@@ -79,6 +79,12 @@
                     Icon="{ext:Icon fa-solid fa-xmark}"
                     ToolTip.Tip="{ext:Locale ExitTooltip}" />
             </MenuItem>
+            <MenuItem VerticalAlignment="Center" Header="Stereo 3D">
+                <MenuItem Name="StereoSettingsMenuItem" Header="Depth &amp; convergence…" InputGesture="F6" />
+                <Separator />
+                <MenuItem Name="StartSbsRecordingMenuItem" Header="Start 4K SBS recording" InputGesture="F9" />
+                <MenuItem Name="StopSbsRecordingMenuItem" Header="Save recording &amp; close game" InputGesture="F10" />
+            </MenuItem>
             <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarOptions}">
                 <MenuItem
                     Command="{Binding ToggleFullscreen}"

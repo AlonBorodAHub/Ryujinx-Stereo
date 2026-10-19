@@ -15,8 +15,8 @@ namespace Ryujinx.Ava.Utilities
             string titleArchSection = activeProcess.Is64Bit ? " (64-bit)" : " (32-bit)";
 
             string appTitle = customTitlebar 
-                ? $"Ryujinx {applicationVersion}\n{titleNameSection.Trim()}\n{titleVersionSection.Trim()}\n{titleIdSection.Trim()}{titleArchSection}"
-                : $"Ryujinx {applicationVersion} -{titleNameSection}{titleVersionSection}{titleIdSection}{titleArchSection}";
+                ? $"Ryujinx Stereo {applicationVersion}\n{titleNameSection.Trim()}\n{titleVersionSection.Trim()}\n{titleIdSection.Trim()}{titleArchSection}"
+                : $"Ryujinx Stereo {applicationVersion} -{titleNameSection}{titleVersionSection}{titleIdSection}{titleArchSection}";
 
             return !string.IsNullOrEmpty(pauseString)
                 ? appTitle + $" ({pauseString})"

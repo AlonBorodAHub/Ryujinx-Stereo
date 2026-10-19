@@ -40,6 +40,9 @@ namespace Ryujinx.Ava.UI.Views.Main
             MiiAppletMenuItem.Command = Commands.Create(OpenMiiApplet);
             CloseRyujinxMenuItem.Command = Commands.Create(CloseWindow);
             OpenSettingsMenuItem.Command = Commands.Create(OpenSettings);
+            StereoSettingsMenuItem.Command = Commands.Create(() => Ryujinx.Ava.Stereo.StereoSettingsWindow.Open(Window));
+            StartSbsRecordingMenuItem.Command = Commands.Create(() => Ryujinx.Ava.Stereo.StereoRecordingUi.Start(Window));
+            StopSbsRecordingMenuItem.Command = Commands.Create(() => Ryujinx.Ava.Stereo.StereoRecordingUi.Stop(Window));
             PauseEmulationMenuItem.Command = Commands.Create(() => ViewModel.AppHost?.Pause());
             ResumeEmulationMenuItem.Command = Commands.Create(() => ViewModel.AppHost?.Resume());
             StopEmulationMenuItem.Command = Commands.Create(() => ViewModel.AppHost?.ShowExitPrompt().OrCompleted());
@@ -120,6 +123,10 @@ namespace Ryujinx.Ava.UI.Views.Main
             {
                 Window = window;
                 DataContext = ViewModel = window.ViewModel;
+                window.KeyBindings.Add(new Avalonia.Input.KeyBinding { Gesture = Avalonia.Input.KeyGesture.Parse("F6"), Command = StereoSettingsMenuItem.Command });
+                window.KeyBindings.Add(new Avalonia.Input.KeyBinding { Gesture = Avalonia.Input.KeyGesture.Parse("F9"), Command = StartSbsRecordingMenuItem.Command });
+                window.KeyBindings.Add(new Avalonia.Input.KeyBinding { Gesture = Avalonia.Input.KeyGesture.Parse("F10"), Command = StopSbsRecordingMenuItem.Command });
+                Ryujinx.Ava.Stereo.StereoRecordingUi.Attach(window);
             }
         }
 

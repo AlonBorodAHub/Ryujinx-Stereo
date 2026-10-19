@@ -1586,6 +1586,11 @@ namespace Ryujinx.Ava.UI.ViewModels
 
         public async Task LoadApplication(ApplicationData application, bool startFullscreen = false, BlitStruct<ApplicationControlProperty>? customNacpData = null)
         {
+            if (!Ryujinx.Ava.Stereo.StereoRuntime.IsChild)
+            {
+                await Ryujinx.Ava.Stereo.StereoRuntime.LaunchAsync(application, (MainWindow)TopLevel, startFullscreen);
+                return;
+            }
 
             if (InitializeUserConfig(application))
             {
@@ -1719,6 +1724,7 @@ namespace Ryujinx.Ava.UI.ViewModels
                 AppHost = null;
 
                 await HandleRelaunch();
+                if (Ryujinx.Ava.Stereo.StereoRuntime.IsChild && AppHost == null) ((MainWindow)TopLevel).Close();
             });
 
             RendererHostControl.WindowCreated -= RendererHost_Created;

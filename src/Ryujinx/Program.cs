@@ -47,6 +47,7 @@ namespace Ryujinx.Ava
         public static int Main(string[] args)
         {
             Version = ReleaseInformation.Version;
+            Ryujinx.Ava.Stereo.StereoRuntime.Initialize();
             
             if (OperatingSystem.IsWindows() && !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             {

@@ -29,7 +29,7 @@ namespace Ryujinx.Ava
                 ? $"{FullAppName}{(includeVersion ? $" {Program.Version}" : string.Empty)}"
                 : $"{FullAppName}{(includeVersion ? $" {Program.Version}" : string.Empty)} - {LocaleManager.Instance[windowTitleKey.Value]}";
 
-        public static readonly string FullAppName = string.Intern(ReleaseInformation.IsCanaryBuild ? "Ryujinx Canary" : "Ryujinx");
+        public static readonly string FullAppName = string.Intern("Ryujinx Stereo");
 
         public static MainWindow MainWindow => Current!
             .ApplicationLifetime.Cast<IClassicDesktopStyleApplicationLifetime>()

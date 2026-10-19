@@ -41,6 +41,8 @@ namespace Ryujinx.Graphics.OpenGL
         private int _width, _height, _frame;
         private long _lastPresent;
         private readonly double[] _frameIntervals = new double[120];
+        private readonly NativeLeiaOutput _nativeLeia = new();
+        private readonly SbsFrameCapture _recording = new();
 
         private static DateTime _settingsStamp;
         static NativeStereo() { if (Enabled) ReloadSettings(); }
@@ -61,6 +63,7 @@ namespace Ryujinx.Graphics.OpenGL
                 if (doc.RootElement.TryGetProperty("alternating_eyes", out var alternating)) AlternatingEyes = alternating.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("layered_framebuffer", out var layered)) LayeredRendering = layered.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("instanced_eyes", out var instanced)) InstancedRendering = instanced.ValueKind == System.Text.Json.JsonValueKind.True;
+                if (doc.RootElement.TryGetProperty("direct_panel_output", out var panel)) NativeLeiaOutput.Requested = panel.ValueKind == System.Text.Json.JsonValueKind.True;
                 _settingsStamp = stamp;
                 Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo settings: separation={Separation}, convergence={Convergence}, disableCharacterShadows={DisableCharacterShadows}");
             }
@@ -174,7 +177,7 @@ namespace Ryujinx.Graphics.OpenGL
         private void EnsureSize(int width, int height)
         {
             if (_width == width && _height == height) return;
-            Dispose();
+            DisposeEyeTargets();
             _width = width; _height = height;
             for (int i = 0; i < 2; i++)
             {
@@ -242,6 +245,9 @@ namespace Ryujinx.Graphics.OpenGL
                     }
                 }
                 FramebufferBinding.Bind(FramebufferTarget.Framebuffer, 0);
+                try { _recording.Frame(width, height); }
+                catch (Exception recordingError) { _recording.Dispose(); SbsRecording.Notify("GPU recording stopped: " + recordingError.Message, false); }
+                _nativeLeia.Present(width, height);
                 swapBuffers();
             }
             finally { SetEye(0); }
@@ -274,6 +280,13 @@ namespace Ryujinx.Graphics.OpenGL
         }
 
         public void Dispose()
+        {
+            _recording.Dispose();
+            _nativeLeia.Dispose();
+            DisposeEyeTargets();
+        }
+
+        private void DisposeEyeTargets()
         {
             for (int i = 0; i < 2; i++)
             {

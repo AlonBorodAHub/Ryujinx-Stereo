@@ -1,0 +1,23 @@
+{
+  "separation": 0.016224,
+  "convergence": 6,
+  "disable_character_shadows": false,
+  "direct_output": true,
+  "runtime_resolution_scale": 1.5,
+  "alternating_eyes": true,
+  "layered_framebuffer": true,
+  "instanced_eyes": true,
+  "guest_instanced_eyes": false,
+  "cache_render_targets": true,
+  "buffer_multibind": true,
+  "cache_buffer_bindings": false,
+  "cache_stereo_resources": true,
+  "render_second_eye": true,
+  "command_flush_ms": 0,
+  "handoff_spin_us": 0,
+  "cache_vertex_bindings": false,
+  "prefetch_buffer_readbacks": true,
+  "host_swap_interval": -1,
+  "direct_panel_output": true,
+  "stereo_enabled": true
+}

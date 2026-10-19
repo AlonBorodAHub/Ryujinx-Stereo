@@ -37,7 +37,7 @@
         <KeyBinding Gesture="Alt+Return" Command="{Binding ToggleFullscreen}" />
         <KeyBinding Gesture="F11" Command="{Binding ToggleFullscreen}" />
         <KeyBinding Gesture="Ctrl+Cmd+F" Command="{Binding ToggleFullscreen}" />
-        <KeyBinding Gesture="F9" Command="{Binding ToggleDockMode}" />
+        <!-- F9/F10 belong to the stereo recorder; menu commands are attached in MainMenuBarView. -->
         <KeyBinding Gesture="Escape" Command="{Binding ExitCurrentState}" />
         <KeyBinding Gesture="Ctrl+A" Command="{Binding OpenAmiiboWindow}" />
         <KeyBinding Gesture="Ctrl+B" Command="{Binding OpenBinFile}" />

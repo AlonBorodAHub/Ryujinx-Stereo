@@ -1,20 +1,27 @@
-Validation performed 2026-10-19
+Ryujinx Stereo 0.2.0 experimental: validation scope, 2026-10-19
 
-PASS: clean-folder standalone launcher check, including argument quoting,
-stereo environment, and --safe-stereo fallback configuration.
-PASS: actual bundled Ryujinx.exe starts and prints command-line help with
-external .NET paths disabled and without using Depth.
-PASS: production emulator parser reads the clean portable configuration.
-PASS: production renderer observes geometric, layered, instanced and eye-array
-stereo flags and the supplied StereoSettings.json.
-PASS: principal native dependencies load from a relocated folder.
-PASS: main emulator and renderer binaries match the user-tested build.
-PASS: portable profile contains only a freshly generated Config.json; no
-keys, firmware, games, saves, caches or personal controller profile.
-PASS: user confirmed correct visuals and smooth movement for this renderer
-in Super Mario Odyssey on RTX 5070 before packaging.
+Both current engines compile as self-contained Windows x64. GPU regressions
+passed for both eyes/order, one presentation per pair, native shared-context
+synchronization and graphics-state preservation. The user confirmed corrected
+Zelda ground shadows, menu lighting, fog/smoke, stereo and colors, and smooth
+native output in both games. Mario launched through the separate dEPTH
+frontend was confirmed as smooth as the desktop emulator with correct 3D.
 
-The clean-folder tests did not open a second controller owner, GUI game
-session, or copied user game/keys. Fresh-install gameplay on another PC
-and other GPU vendors is not yet verified. First-run shader hitches are
-expected without the user's private shader cache.
+A real OpenGL capture test with synthetic two-eye quadrants and loopback audio
+passed: upright eye order/colors, 3840x2160 H.264 at exactly 60/1 fps, audible
+AAC, equal audio/video duration, preserved game GL state, and safe repeated
+start/stop/immediate cancellation. The save-before-close test returned the
+output path only after MP4 finalization. Both engines compiled after adding
+foreground-only fullscreen hotkeys. The user confirmed F9/F10 closed Zelda
+and showed the saved MP4. That gameplay clip was not independently located
+or decoded; codec/audio assertions refer to the separate synthetic GPU test.
+
+Release preparation validates publication source builds, relocated --help
+startup, clean config, runtime hashes and archive exclusions. The download
+uses allow-listed runtime files and fresh keyboard configuration, without
+private profiles or game data.
+
+No full-game benchmark or fresh-install gameplay on a second PC is claimed.
+Stable 60 fps everywhere, other GPUs/displays and other games are unverified.
+Capture repeats source frames below 60 fps. Display runtime and recording
+FFmpeg executable are external dependencies.

@@ -213,13 +213,13 @@ namespace Ryujinx.Ava.UI.Windows
             }
         }
 
-        public void Application_Opened(object sender, ApplicationOpenedEventArgs args)
+        public async void Application_Opened(object sender, ApplicationOpenedEventArgs args)
         {
             if (args.Application != null)
             {
                 ViewModel.SelectedIcon = args.Application.Icon;
 
-                ViewModel.LoadApplication(args.Application).Wait();
+                await ViewModel.LoadApplication(args.Application);
             }
 
             args.Handled = true;
@@ -540,6 +540,7 @@ namespace Ryujinx.Ava.UI.Windows
             }
 
             _ = CheckLaunchState();
+            Ryujinx.Ava.Stereo.StereoUiPreview.Run(this);
         }
 
         private void SetMainContent(Control content = null)
