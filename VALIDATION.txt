@@ -1,0 +1,20 @@
+Validation performed 2026-10-19
+
+PASS: clean-folder standalone launcher check, including argument quoting,
+stereo environment, and --safe-stereo fallback configuration.
+PASS: actual bundled Ryujinx.exe starts and prints command-line help with
+external .NET paths disabled and without using Depth.
+PASS: production emulator parser reads the clean portable configuration.
+PASS: production renderer observes geometric, layered, instanced and eye-array
+stereo flags and the supplied StereoSettings.json.
+PASS: principal native dependencies load from a relocated folder.
+PASS: main emulator and renderer binaries match the user-tested build.
+PASS: portable profile contains only a freshly generated Config.json; no
+keys, firmware, games, saves, caches or personal controller profile.
+PASS: user confirmed correct visuals and smooth movement for this renderer
+in Super Mario Odyssey on RTX 5070 before packaging.
+
+The clean-folder tests did not open a second controller owner, GUI game
+session, or copied user game/keys. Fresh-install gameplay on another PC
+and other GPU vendors is not yet verified. First-run shader hitches are
+expected without the user's private shader cache.

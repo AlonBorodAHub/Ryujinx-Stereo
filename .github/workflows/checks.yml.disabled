@@ -1,0 +1,25 @@
+name: Build PR
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '**'
+      - '!.github/**'
+      - '!*.yml'
+      - '!*.config'
+      - '!*.md'
+      - '.github/workflows/*.yml'
+
+permissions:
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: pr-checks-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr_build:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit

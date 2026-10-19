@@ -1,0 +1,287 @@
+<UserControl
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:ext="clr-namespace:Ryujinx.Ava.Common.Markup"
+    mc:Ignorable="d"
+    xmlns:viewModels="clr-namespace:Ryujinx.Ava.UI.ViewModels"
+    xmlns:controls="clr-namespace:Ryujinx.Ava.UI.Controls"
+    x:DataType="viewModels:MainWindowViewModel"
+    x:Class="Ryujinx.Ava.UI.Views.Main.MainMenuBarView">
+    <Design.DataContext>
+        <viewModels:MainWindowViewModel />
+    </Design.DataContext>
+    <DockPanel HorizontalAlignment="Stretch">
+        <controls:RyujinxLogo 
+            Margin="7, 0" 
+            ToolTip.Tip="{Binding Title}"/>
+        <Menu
+            Name="Menu"
+            Height="32"
+            Margin="0"
+            HorizontalAlignment="Left"
+            IsOpen="{Binding IsSubMenuOpen, Mode=OneWayToSource}">
+            <Menu.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <DockPanel Margin="0" HorizontalAlignment="Stretch" />
+                </ItemsPanelTemplate>
+            </Menu.ItemsPanel>
+            <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarFile}">
+                <MenuItem
+                    Command="{Binding OpenFile}"
+                    Header="{ext:Locale MenuBarFileOpenFromFile}"
+                    Icon="{ext:Icon fa-solid fa-file}"
+                    IsEnabled="{Binding EnableNonGameRunningControls}"
+                    ToolTip.Tip="{ext:Locale LoadApplicationFileTooltip}" />
+                <MenuItem
+                    Command="{Binding OpenFolder}"
+                    Header="{ext:Locale MenuBarFileOpenUnpacked}"
+                    Icon="{ext:Icon fa-solid fa-folder}"
+                    IsEnabled="{Binding EnableNonGameRunningControls}"
+                    ToolTip.Tip="{ext:Locale LoadApplicationFolderTooltip}" />
+                <MenuItem
+                    Command="{Binding LoadDlcFromFolder}"
+                    Header="{ext:Locale MenuBarFileLoadDlcFromFolder}"
+                    Icon="{ext:Icon fa-solid fa-download}"
+                    IsEnabled="{Binding EnableNonGameRunningControls}"
+                    ToolTip.Tip="{ext:Locale LoadDlcFromFolderTooltip}" />
+                <MenuItem
+                    Command="{Binding LoadTitleUpdatesFromFolder}"
+                    Header="{ext:Locale MenuBarFileLoadTitleUpdatesFromFolder}"
+                    Icon="{ext:Icon fa-solid fa-code-compare}"
+                    IsEnabled="{Binding EnableNonGameRunningControls}"
+                    ToolTip.Tip="{ext:Locale LoadTitleUpdatesFromFolderTooltip}" />
+                <MenuItem Header="{ext:Locale MenuBarFileOpenApplet}" IsEnabled="{Binding IsAppletMenuActive}" Icon="{ext:Icon mdi-launch}">
+                    <MenuItem
+                        Name="MiiAppletMenuItem"
+                        Header="{ext:Locale MenuBarFileOpenAppletOpenMiiApplet}"
+                        Icon="{ext:Icon fa-solid fa-person}"
+                        ToolTip.Tip="{ext:Locale MenuBarFileOpenAppletOpenMiiAppletToolTip}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem
+                    Command="{Binding OpenRyujinxFolder}"
+                    Header="{ext:Locale MenuBarFileOpenEmuFolder}"
+                    ToolTip.Tip="{ext:Locale OpenRyujinxFolderTooltip}" />
+                <MenuItem
+                    Command="{Binding OpenScreenshotsFolder}"
+                    Header="{ext:Locale MenuBarFileOpenScreenshotsFolder}"
+                    ToolTip.Tip="{ext:Locale OpenScreenshotFolderTooltip}"/>
+                <MenuItem
+                    Command="{Binding OpenLogsFolder}"
+                    Header="{ext:Locale MenuBarFileOpenLogsFolder}"
+                    ToolTip.Tip="{ext:Locale OpenRyujinxLogsTooltip}" />
+                <Separator />
+                <MenuItem
+                    Name="CloseRyujinxMenuItem"
+                    Header="{ext:Locale MenuBarFileExit}"
+                    Icon="{ext:Icon fa-solid fa-xmark}"
+                    ToolTip.Tip="{ext:Locale ExitTooltip}" />
+            </MenuItem>
+            <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarOptions}">
+                <MenuItem
+                    Command="{Binding ToggleFullscreen}"
+                    Header="{ext:Locale MenuBarOptionsToggleFullscreen}"
+                    Classes="withCheckbox"
+                    Padding="0"
+                    Icon="{ext:Icon fa-solid fa-expand}"
+                    InputGesture="F11">
+                </MenuItem>
+                <MenuItem
+                    Padding="0"
+                    Command="{Binding ToggleStartGamesInFullscreen}"
+                    Header="{ext:Locale MenuBarOptionsStartGamesInFullscreen}"
+                    Classes="withCheckbox">
+                    <MenuItem.Icon>
+                        <CheckBox
+                            MinWidth="{DynamicResource CheckBoxSize}"
+                            MinHeight="{DynamicResource CheckBoxSize}"
+                            IsChecked="{Binding StartGamesInFullscreen, Mode=TwoWay}"
+                            Padding="0" />
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem
+                    Padding="0"
+                    Command="{Binding ToggleStartGamesWithoutUI}"
+                    Header="{ext:Locale MenuBarOptionsStartGamesWithoutUI}"
+                    Classes="withCheckbox">
+                    <MenuItem.Icon>
+                        <CheckBox
+                            MinWidth="{DynamicResource CheckBoxSize}"
+                            MinHeight="{DynamicResource CheckBoxSize}"
+                            IsChecked="{Binding StartGamesWithoutUI, Mode=TwoWay}"
+                            Padding="0" />
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem
+                    Padding="0"
+                    IsVisible="{Binding ShowConsoleVisible}"
+                    Command="{Binding ToggleShowConsole}"
+                    Header="{ext:Locale MenuBarOptionsShowConsole}"
+                    Classes="withCheckbox">
+                    <MenuItem.Icon>
+                        <CheckBox
+                            MinWidth="{DynamicResource CheckBoxSize}"
+                            MinHeight="{DynamicResource CheckBoxSize}"
+                            IsChecked="{Binding ShowConsole, Mode=TwoWay}"
+                            Padding="0" />
+                    </MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <MenuItem
+                    Name="ChangeLanguageMenuItem" 
+                    Padding="0"
+                    Header="{ext:Locale MenuBarOptionsChangeLanguage}"
+                    Icon="{ext:Icon fa-solid fa-language}"
+                    Classes="withCheckbox">
+                </MenuItem>
+                <MenuItem 
+                    Name="ToggleFileTypesMenuItem" 
+                    Padding="-10,0,0,0"
+                    Header="{ext:Locale MenuBarShowFileTypes}" />
+                <Separator />
+                <MenuItem
+                    Name="OpenSettingsMenuItem"
+                    Padding="0"
+                    Header="{ext:Locale MenuBarOptionsSettings}"
+                    Icon="{ext:Icon fa-solid fa-gear}"
+                    ToolTip.Tip="{ext:Locale OpenSettingsTooltip}"
+                    Classes="withCheckbox">
+                </MenuItem>
+                <MenuItem
+                    Command="{Binding ManageProfiles}"
+                    Padding="0"
+                    Header="{ext:Locale MenuBarOptionsManageUserProfiles}"
+                    Icon="{ext:Icon mdi-account}"
+                    IsEnabled="{Binding EnableNonGameRunningControls}"
+                    ToolTip.Tip="{ext:Locale OpenProfileManagerTooltip}"
+                    Classes="withCheckbox">
+                </MenuItem>
+            </MenuItem>
+            <MenuItem
+                Name="ActionsMenuItem"
+                VerticalAlignment="Center"
+                Header="{ext:Locale MenuBarActions}"
+                IsVisible="{Binding !EnableNonGameRunningControls}">
+                <MenuItem
+                    Name="PauseEmulationMenuItem"
+                    Header="{ext:Locale MenuBarOptionsPauseEmulation}"
+                    Icon="{ext:Icon fa-solid fa-pause}"
+                    InputGesture="{Binding PauseKey}"
+                    IsEnabled="{Binding !IsPaused}"
+                    IsVisible="{Binding !IsPaused}" />
+                <MenuItem
+                    Name="ResumeEmulationMenuItem"
+                    Header="{ext:Locale MenuBarOptionsResumeEmulation}"
+                    Icon="{ext:Icon fa-solid fa-play}"
+                    InputGesture="{Binding PauseKey}"
+                    IsEnabled="{Binding IsPaused}"
+                    IsVisible="{Binding IsPaused}" />
+                <MenuItem
+                    Name="StopEmulationMenuItem"
+                    Header="{ext:Locale MenuBarOptionsStopEmulation}"
+                    Icon="{ext:Icon fa-solid fa-stop}"
+                    InputGesture="Escape"
+                    IsEnabled="{Binding IsGameRunning}"
+                    ToolTip.Tip="{ext:Locale StopEmulationTooltip}" />
+                <MenuItem Command="{Binding SimulateWakeUpMessage}" Header="{ext:Locale MenuBarOptionsSimulateWakeUpMessage}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding OpenAmiiboWindow}"
+                    AttachedToVisualTree="ScanAmiiboMenuItem_AttachedToVisualTree"
+                    Header="{ext:Locale MenuBarActionsScanAmiibo}"
+                    Icon="{ext:Icon mdi-cube-scan}"
+                    InputGesture="Ctrl + A"
+                    IsEnabled="{Binding IsAmiiboRequested}" />
+                <MenuItem
+                    Command="{Binding OpenBinFile}"
+                    AttachedToVisualTree="ScanBinAmiiboMenuItem_AttachedToVisualTree"
+                    Header="{ext:Locale MenuBarActionsScanAmiiboBin}"
+                    Icon="{ext:Icon mdi-cube-scan}"
+                    IsVisible="{Binding CanScanAmiiboBinaries}"
+                    InputGesture="Ctrl + B"
+                    IsEnabled="{Binding IsAmiiboBinRequested}" />
+                <MenuItem
+                    Command="{Binding TakeScreenshot}"
+                    Header="{ext:Locale MenuBarFileToolsTakeScreenshot}"
+                    Icon="{ext:Icon mdi-monitor-screenshot}"
+                    InputGesture="{Binding ScreenshotKey}"
+                    IsEnabled="{Binding IsGameRunning}" />
+                <MenuItem
+                    Command="{Binding HideUi}"
+                    Header="{ext:Locale MenuBarFileToolsHideUi}"
+                    Icon="{ext:Icon mdi-eye-off}"
+                    InputGesture="{Binding ShowUiKey}"
+                    IsEnabled="{Binding IsGameRunning}" />
+                <MenuItem
+                    Name="CheatManagerMenuItem"
+                    Header="{ext:Locale GameListContextMenuManageCheat}"
+                    Icon="{ext:Icon fa-solid fa-code}"
+                    IsEnabled="{Binding IsGameRunning}" />
+            </MenuItem>
+            <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarActions}" IsVisible="{Binding EnableNonGameRunningControls}">
+                <MenuItem Header="{ext:Locale MenuBarActionsInstallKeys}" Icon="{ext:Icon fa-solid fa-key}">
+                    <MenuItem Command="{Binding InstallKeysFromFile}" Header="{ext:Locale MenuBarFileActionsInstallKeysFromFile}" Icon="{ext:Icon mdi-file-cog}" />
+                    <MenuItem Command="{Binding InstallKeysFromFolder}" Header="{ext:Locale MenuBarFileActionsInstallKeysFromFolder}" Icon="{ext:Icon mdi-folder-cog}" />
+                </MenuItem>
+                <MenuItem Header="{ext:Locale MenuBarActionsInstallFirmware}" Icon="{ext:Icon fa-solid fa-download}">
+                    <MenuItem Command="{Binding InstallFirmwareFromFile}" Header="{ext:Locale MenuBarActionsInstallFirmwareFromFile}" Icon="{ext:Icon mdi-file-cog}" />
+                    <MenuItem Command="{Binding InstallFirmwareFromFolder}" Header="{ext:Locale MenuBarActionsInstallFirmwareFromDirectory}" Icon="{ext:Icon mdi-folder-cog}" />
+                </MenuItem>
+                <MenuItem Header="{ext:Locale MenuBarActionsManageFileTypes}" IsVisible="{Binding ManageFileTypesVisible}">
+                    <MenuItem Name="InstallFileTypesMenuItem" Header="{ext:Locale MenuBarActionsInstallFileTypes}" IsEnabled="{Binding AreMimeTypesRegistered, Converter={x:Static BoolConverters.Not}}" />
+                    <MenuItem Name="UninstallFileTypesMenuItem" Header="{ext:Locale MenuBarActionsUninstallFileTypes}" IsEnabled="{Binding AreMimeTypesRegistered}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Name="XciTrimmerMenuItem" Header="{ext:Locale MenuBarActionsXCITrimmer}" Icon="{ext:Icon fa-solid fa-scissors}" />
+            </MenuItem>
+            <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarView}">
+                <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarViewWindow}">
+                    <MenuItem Name="WindowSize720PMenuItem" Header="{ext:Locale MenuBarViewWindow720}" CommandParameter="1280 720" />
+                    <MenuItem Name="WindowSize1080PMenuItem" Header="{ext:Locale MenuBarViewWindow1080}" CommandParameter="1920 1080" />
+                    <MenuItem Name="WindowSize1440PMenuItem" Header="{ext:Locale MenuBarViewWindow1440}" CommandParameter="2560 1440" />
+                    <MenuItem Name="WindowSize2160PMenuItem" Header="{ext:Locale MenuBarViewWindow2160}" CommandParameter="3840 2160" />
+                </MenuItem>
+            </MenuItem>
+            <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarHelp}">
+                <MenuItem
+                    Name="AboutWindowMenuItem"
+                    Header="{ext:Locale MenuBarHelpAbout}"
+                    Icon="{ext:Icon fa-solid fa-circle-info}"
+                    ToolTip.Tip="{ext:Locale OpenAboutTooltip}" />
+                <MenuItem
+                    Name="UpdateMenuItem"
+                    IsEnabled="{Binding CanUpdate}"
+                    Header="{ext:Locale MenuBarHelpCheckForUpdates}"
+                    Icon="{ext:Icon mdi-update}"
+                    ToolTip.Tip="{ext:Locale CheckUpdatesTooltip}" />
+                <MenuItem
+                    Name="CompatibilityListMenuItem"
+                    Header="{ext:Locale CompatibilityListOpen}"
+                    Icon="{ext:Icon mdi-gamepad}"/>
+                <Separator />
+                <MenuItem VerticalAlignment="Center" Header="{ext:Locale MenuBarHelpFaqAndGuides}" Icon="{ext:Icon fa-solid fa-question}" >
+                    <MenuItem
+                        Name="FaqMenuItem"
+                        Header="{ext:Locale MenuBarHelpFaq}"
+                        Icon="{ext:Icon fa-github}"
+                        CommandParameter="https://git.ryujinx.app/ryubing/ryujinx/-/wikis/FAQ-&amp;-Troubleshooting"
+                        ToolTip.Tip="{ext:Locale MenuBarHelpFaqTooltip}" />
+                    <MenuItem
+                        Name="SetupGuideMenuItem"
+                        Header="{ext:Locale MenuBarHelpSetup}"
+                        Icon="{ext:Icon fa-github}"
+                        CommandParameter="https://git.ryujinx.app/ryubing/ryujinx/-/wikis/Setup-&amp;-Configuration-Guide"
+                        ToolTip.Tip="{ext:Locale MenuBarHelpSetupTooltip}" />
+                    <MenuItem
+                        Name="LdnGuideMenuItem"
+                        Header="{ext:Locale MenuBarHelpMultiplayer}"
+                        Icon="{ext:Icon fa-github}"
+                        CommandParameter="https://git.ryujinx.app/ryubing/ryujinx/-/wikis/Multiplayer-(LDN-Local-Wireless)-Guide"
+                        ToolTip.Tip="{ext:Locale MenuBarHelpMultiplayerTooltip}" />
+                </MenuItem>
+            </MenuItem>
+        </Menu>
+    </DockPanel>
+</UserControl>

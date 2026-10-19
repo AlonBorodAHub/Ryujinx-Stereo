@@ -1,0 +1,2727 @@
+--- a/src/Ryujinx/Program.cs
++++ b/src/Ryujinx/Program.cs
+@@ -143,7 +143,13 @@
+             PrintSystemInfo();
+ 
+             // Enable OGL multithreading on the driver, and some other flags.
+-            DriverUtilities.InitDriverConfig(ConfigurationState.Instance.Graphics.BackendThreading == BackendThreading.Off);
++            bool driverThreading = ConfigurationState.Instance.Graphics.BackendThreading == BackendThreading.Off;
++            // Optional stereo-only test: overlap guest GPU decoding, backend submission, and driver execution.
++            if (Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" &&
++                Environment.GetEnvironmentVariable("RYU_STEREO_DRIVER_THREADING") == "1") driverThreading = true;
++            DriverUtilities.InitDriverConfig(driverThreading);
++            if (Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1")
++                Logger.Notice.Print(LogClass.Application, $"GeometryStereo driver threading requested: {driverThreading}");
+ 
+             // Check if keys exists.
+             if (!File.Exists(Path.Combine(AppDataManager.KeysDirPath, "prod.keys")))
+--- a/src/Ryujinx/Systems/AppHost.cs
++++ b/src/Ryujinx/Systems/AppHost.cs
+@@ -592,6 +592,12 @@
+             // We only need to wait for all commands submitted during the main gpu loop to be processed.
+             _gpuDoneEvent.WaitOne();
+             _gpuDoneEvent.Dispose();
++            if (Device.Gpu.Renderer is not ThreadedRenderer && _renderingThread.IsAlive && Thread.CurrentThread != _renderingThread)
++            {
++                // A direct backend can finish and release its context now;
++                // unlike the threaded backend it has no disposal queue to run.
++                _renderingThread.Join();
++            }
+ 
+             DisplaySleep.Restore();
+ 
+@@ -639,13 +645,24 @@
+ 
+             if (RendererHost.EmbeddedWindow is EmbeddedWindowOpenGL openGlWindow)
+             {
+-                // Try to bind the OpenGL context before calling the shutdown event.
+-                openGlWindow.MakeCurrent(false, false);
+-
+-                Device.DisposeGpu();
+-
+-                // Unbind context and destroy everything.
+-                openGlWindow.MakeCurrent(true, false);
++                if (Device.Gpu.Renderer is ThreadedRenderer)
++                {
++                    // The backend still owns this context. Its disposal callback
++                    // drains and deletes GL resources before the render loop exits.
++                    Device.DisposeGpu();
++                    // Complete context unbinding before AppExit can destroy the
++                    // embedded window on the UI thread.
++                    if (_renderingThread.IsAlive && Thread.CurrentThread != _renderingThread)
++                    {
++                        _renderingThread.Join();
++                    }
++                }
++                else
++                {
++                    openGlWindow.MakeCurrent();
++                    Device.DisposeGpu();
++                    openGlWindow.MakeCurrent(true);
++                }
+             }
+             else
+             {
+@@ -1097,8 +1114,37 @@
+             _viewModel.GpuNameText = $"GPU: {_renderer.GetHardwareInfo().GpuDriver}";
+         }
+ 
++        private long _nextStereoScaleCheck;
++        private DateTime _stereoScaleStamp;
++        private void UpdateStereoRuntimeScale()
++        {
++            if (Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") != "1") return;
++            long now = Stopwatch.GetTimestamp();
++            if (now < _nextStereoScaleCheck) return;
++            _nextStereoScaleCheck = now + Stopwatch.Frequency;
++            string path = Path.Combine(AppContext.BaseDirectory, "StereoSettings.json");
++            try
++            {
++                if (!File.Exists(path)) return;
++                DateTime stamp = File.GetLastWriteTimeUtc(path);
++                if (stamp == _stereoScaleStamp) return;
++                using var settings = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
++                if (settings.RootElement.TryGetProperty("runtime_resolution_scale", out var scale) &&
++                    scale.TryGetSingle(out float value) && float.IsFinite(value) && value >= 1f && value <= 2f &&
++                    MathF.Abs(GraphicsConfig.ResScale - value) > 0.001f)
++                {
++                    GraphicsConfig.ResScale = value;
++                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo live internal resolution scale: {value}");
++                }
++                _stereoScaleStamp = stamp;
++            }
++            catch (IOException) { }
++            catch (System.Text.Json.JsonException) { }
++        }
++
+         public void UpdateStatus()
+         {
++            UpdateStereoRuntimeScale();
+             // Run a status update only when a frame is to be drawn. This prevents from updating the ui and wasting a render when no frame is queued.
+             string dockedMode = ConfigurationState.Instance.System.EnableDockedMode ? LocaleManager.Instance[LocaleKeys.Docked] : LocaleManager.Instance[LocaleKeys.Handheld];
+             string vSyncMode = Device.VSyncMode.ToString();
+--- a/src/Ryujinx.Graphics.GAL/IProgram.cs
++++ b/src/Ryujinx.Graphics.GAL/IProgram.cs
+@@ -7,5 +7,8 @@
+         ProgramLinkStatus CheckProgramLink(bool blocking);
+ 
+         byte[] GetBinary();
++
++        // Caller must own a compatible shared graphics context.
++        byte[] GetBinaryFromCurrentContext() => GetBinary();
+     }
+ }
+--- a/src/Ryujinx.Graphics.GAL/Multithreading/Resources/ProgramQueue.cs
++++ b/src/Ryujinx.Graphics.GAL/Multithreading/Resources/ProgramQueue.cs
+@@ -16,10 +16,14 @@
+ 
+         private readonly Queue<IProgramRequest> _toCompile;
+         private readonly List<ThreadedProgram> _inProgress;
++        private readonly List<System.Threading.Tasks.Task> _backgroundCompilations = new();
++        private readonly bool _compileInBackground;
+ 
+         public ProgramQueue(IRenderer renderer)
+         {
+             _renderer = renderer;
++            _compileInBackground = Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" &&
++                Environment.GetEnvironmentVariable("RYU_STEREO_BACKGROUND_COMPILATION") != "0" && renderer.GetType().Name == "OpenGLRenderer";
+ 
+             _toCompile = new Queue<IProgramRequest>();
+             _inProgress = [];
+@@ -29,8 +33,17 @@
+         {
+             lock (_toCompile)
+             {
++                if (_compileInBackground && request is SourceProgramRequest source)
++                    _backgroundCompilations.Add(source.StartBackgroundCompilation(_renderer));
+                 _toCompile.Enqueue(request);
+             }
++        }
++        internal void DrainBackgroundCompilations()
++        {
++            System.Threading.Tasks.Task[] pending;
++            lock (_toCompile) pending = _backgroundCompilations.ToArray();
++            try { System.Threading.Tasks.Task.WaitAll(pending); }
++            catch (AggregateException) { /* Creation commands report compilation failures. */ }
+         }
+ 
+         public void ProcessQueue()
+@@ -57,6 +70,7 @@
+ 
+                 lock (_toCompile)
+                 {
++                    if (_toCompile.TryPeek(out var next) && next is SourceProgramRequest source && source.CompilationPending) break;
+                     if (!_toCompile.TryDequeue(out program))
+                     {
+                         break;
+--- a/src/Ryujinx.Graphics.GAL/Multithreading/Resources/Programs/SourceProgramRequest.cs
++++ b/src/Ryujinx.Graphics.GAL/Multithreading/Resources/Programs/SourceProgramRequest.cs
+@@ -1,3 +1,9 @@
++using System;
++using System.Diagnostics;
++using System.Threading;
++using System.Threading.Tasks;
++using Ryujinx.Common.Logging;
++
+ namespace Ryujinx.Graphics.GAL.Multithreading.Resources.Programs
+ {
+     class SourceProgramRequest : IProgramRequest
+@@ -6,6 +12,44 @@
+ 
+         private readonly ShaderSource[] _shaders;
+         private ShaderInfo _info;
++        private static readonly SemaphoreSlim CompilationSlots = new(8);
++        private Task<IProgram> _backgroundCompilation;
++        internal bool CompilationPending => _backgroundCompilation != null && !_backgroundCompilation.IsCompleted;
++        internal Task StartBackgroundCompilation(IRenderer renderer)
++        {
++            _backgroundCompilation = Task.Run(async () =>
++            {
++                await CompilationSlots.WaitAsync().ConfigureAwait(false);
++                long started = Stopwatch.GetTimestamp();
++                try
++                {
++                    void OnContext(Action action)
++                    {
++                        Exception failure = null;
++                        renderer.BackgroundContextAction(() =>
++                        {
++                            try { action(); }
++                            catch (Exception ex) { failure = ex; }
++                        }, alwaysBackground: true);
++                        if (failure != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
++                    }
++                    IProgram program = null;
++                    OnContext(() => program = renderer.CreateProgram(_shaders, _info));
++                    while (true)
++                    {
++                        ProgramLinkStatus status = ProgramLinkStatus.Incomplete;
++                        OnContext(() => status = program.CheckProgramLink(false));
++                        if (status != ProgramLinkStatus.Incomplete) break;
++                        await Task.Delay(1).ConfigureAwait(false);
++                    }
++                    double elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
++                    if (elapsed > 8) Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo background shader ready: {elapsed:F1} ms");
++                    return program;
++                }
++                finally { CompilationSlots.Release(); }
++            });
++            return _backgroundCompilation;
++        }
+ 
+         public SourceProgramRequest(ThreadedProgram program, ShaderSource[] shaders, ShaderInfo info)
+         {
+@@ -17,6 +61,14 @@
+ 
+         public IProgram Create(IRenderer renderer)
+         {
++            if (_backgroundCompilation != null)
++            {
++                long started = Stopwatch.GetTimestamp();
++                IProgram result = _backgroundCompilation.GetAwaiter().GetResult();
++                double elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
++                if (elapsed > 8) Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo first-use shader wait: {elapsed:F1} ms");
++                return result;
++            }
+             return renderer.CreateProgram(_shaders, _info);
+         }
+     }
+--- a/src/Ryujinx.Graphics.GAL/Multithreading/Resources/ThreadedProgram.cs
++++ b/src/Ryujinx.Graphics.GAL/Multithreading/Resources/ThreadedProgram.cs
+@@ -27,6 +27,8 @@
+             _renderer.QueueCommand();
+         }
+ 
++        public byte[] GetBinaryFromCurrentContext() => Base.GetBinaryFromCurrentContext();
++
+         public byte[] GetBinary()
+         {
+             ResultBox<byte[]> box = new();
+--- a/src/Ryujinx.Graphics.GAL/Multithreading/ThreadedRenderer.cs
++++ b/src/Ryujinx.Graphics.GAL/Multithreading/ThreadedRenderer.cs
+@@ -526,17 +526,28 @@
+ 
+             // Dispose must happen from the render thread, after all commands have completed.
+ 
+-            // Stop the GPU thread.
+-            _running = false;
+-            _galWorkAvailable.Set();
+-
++            // The guest GPU loop has stopped, but the backend thread must remain
++            // alive to drain resource deletions and own its OpenGL context.
+             if (_gpuThread != null && _gpuThread.IsAlive)
+             {
+                 _gpuThread.Join();
+             }
+ 
+-            // Dispose the renderer.
+-            _baseRenderer.Dispose();
++            Programs.DrainBackgroundCompilations();
++            if (_running && _backendThread != null && Thread.CurrentThread != _backendThread)
++            {
++                FlushThreadedCommands();
++                Interrupt(() =>
++                {
++                    _baseRenderer.Dispose();
++                    _running = false;
++                });
++            }
++            else
++            {
++                _baseRenderer.Dispose();
++                _running = false;
++            }
+ 
+             // Dispose events.
+             _frameComplete.Dispose();
+--- a/src/Ryujinx.Graphics.Gpu/Shader/DiskCache/BackgroundDiskCacheWriter.cs
++++ b/src/Ryujinx.Graphics.Gpu/Shader/DiskCache/BackgroundDiskCacheWriter.cs
+@@ -1,5 +1,6 @@
+ using Ryujinx.Common;
+ using Ryujinx.Common.Logging;
++using Ryujinx.Graphics.GAL;
+ using System;
+ using System.IO;
+ 
+@@ -57,16 +58,18 @@
+             /// Binary host code.
+             /// </summary>
+             public readonly byte[] HostCode;
++            public readonly IProgram HostProgram;
+ 
+             /// <summary>
+             /// Creates a new background shader cache write information.
+             /// </summary>
+             /// <param name="program">Cached shader program</param>
+             /// <param name="hostCode">Binary host code</param>
+-            public AddShaderData(CachedShaderProgram program, byte[] hostCode)
++            public AddShaderData(CachedShaderProgram program, byte[] hostCode, IProgram hostProgram)
+             {
+                 Program = program;
+                 HostCode = hostCode;
++                HostProgram = hostProgram;
+             }
+         }
+ 
+@@ -98,7 +101,10 @@
+                     AddShaderData data = (AddShaderData)task.Data;
+                     try
+                     {
+-                        _hostStorage.AddShader(_context, data.Program, data.HostCode);
++                        byte[] hostCode = data.HostCode;
++                        if (data.HostProgram != null)
++                            _context.Renderer.BackgroundContextAction(() => hostCode = data.HostProgram.GetBinaryFromCurrentContext(), alwaysBackground: true);
++                        _hostStorage.AddShader(_context, data.Program, hostCode);
+                     }
+                     catch (DiskCacheLoadException diskCacheLoadException)
+                     {
+@@ -117,9 +123,9 @@
+         /// </summary>
+         /// <param name="program">Shader program to cache</param>
+         /// <param name="hostCode">Host binary code of the program</param>
+-        public void AddShader(CachedShaderProgram program, byte[] hostCode)
++        public void AddShader(CachedShaderProgram program, byte[] hostCode, IProgram hostProgram = null)
+         {
+-            _fileWriterWorkerQueue.Add(new CacheFileOperationTask(CacheFileOperation.AddShader, new AddShaderData(program, hostCode)));
++            _fileWriterWorkerQueue.Add(new CacheFileOperationTask(CacheFileOperation.AddShader, new AddShaderData(program, hostCode, hostProgram)));
+         }
+ 
+         public void Dispose()
+--- a/src/Ryujinx.Graphics.Gpu/Shader/DiskCache/DiskCacheHostStorage.cs
++++ b/src/Ryujinx.Graphics.Gpu/Shader/DiskCache/DiskCacheHostStorage.cs
+@@ -22,7 +22,7 @@
+         private const ushort FileFormatVersionMajor = 1;
+         private const ushort FileFormatVersionMinor = 2;
+         private const uint FileFormatVersionPacked = ((uint)FileFormatVersionMajor << 16) | FileFormatVersionMinor;
+-        private const uint CodeGenVersion = 7353;
++        private static readonly uint CodeGenVersion = Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" ? (Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1" ? (Environment.GetEnvironmentVariable("RYU_STEREO_INSTANCED") == "1" ? (Environment.GetEnvironmentVariable("RYU_STEREO_ARRAY_SAMPLING") == "1" ? 0x53540009u : 0x53540008u) : 0x53540007u) : 0x53540006u) : 7353u;
+ 
+         private const string SharedTocFileName = "shared.toc";
+         private const string SharedDataFileName = "shared.data";
+@@ -194,6 +194,7 @@
+         /// <param name="basePath">Base path of the shader cache</param>
+         public DiskCacheHostStorage(string basePath)
+         {
++            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1") basePath = Path.Combine(basePath, Environment.GetEnvironmentVariable("RYU_STEREO_ARRAY_SAMPLING") == "1" ? "array-sampling-stereo" : Environment.GetEnvironmentVariable("RYU_STEREO_INSTANCED") == "1" ? "instanced-stereo" : "layered-stereo");
+             _basePath = basePath;
+             _guestStorage = new DiskCacheGuestStorage(basePath);
+ 
+--- a/src/Ryujinx.Graphics.Gpu/Shader/ShaderCache.cs
++++ b/src/Ryujinx.Graphics.Gpu/Shader/ShaderCache.cs
+@@ -136,7 +136,11 @@
+                 {
+                     if (result == ProgramLinkStatus.Success)
+                     {
+-                        _cacheWriter.AddShader(programToSave.CachedProgram, programToSave.BinaryCode ?? programToSave.HostProgram.GetBinary());
++                        bool backgroundExport = _context.Capabilities.Api == TargetApi.OpenGL && Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" && programToSave.BinaryCode == null;
++                        if (backgroundExport)
++                            _cacheWriter.AddShader(programToSave.CachedProgram, null, programToSave.HostProgram);
++                        else
++                            _cacheWriter.AddShader(programToSave.CachedProgram, programToSave.BinaryCode ?? programToSave.HostProgram.GetBinary());
+                     }
+ 
+                     _programsToSaveQueue.Dequeue();
+@@ -842,6 +846,8 @@
+         /// </summary>
+         public void Dispose()
+         {
++            // Wait for any in-flight binary export before deleting shared program objects.
++            _cacheWriter?.Dispose();
+             foreach (CachedShaderProgram program in _graphicsShaderCache.GetPrograms())
+             {
+                 program.Dispose();
+@@ -852,7 +858,6 @@
+                 program.Dispose();
+             }
+ 
+-            _cacheWriter?.Dispose();
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.OpenGL/Effects/SmaaPostProcessingEffect.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Effects/SmaaPostProcessingEffect.cs
+@@ -203,7 +203,7 @@
+             GL.Clear(ClearBufferMask.ColorBufferBit);
+             GL.ClearColor(0, 0, 0, 0);
+ 
+-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, previousFramebuffer);
++            FramebufferBinding.Bind(FramebufferTarget.Framebuffer, previousFramebuffer);
+ 
+             framebuffer.Dispose();
+ 
+--- a/src/Ryujinx.Graphics.OpenGL/Framebuffer.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Framebuffer.cs
+@@ -8,7 +8,56 @@
+ {
+     class Framebuffer : IDisposable
+     {
+-        public int Handle { get; private set; }
++        private int _leftHandle;
++        private int _rightHandle;
++        private int _layeredHandle, _layeredDepth, _layeredDrawCount = -1;
++        private readonly int[] _layeredColors = new int[8];
++        private FramebufferAttachment _layeredDepthAttachment;
++
++        private bool TryBindLayered()
++        {
++            bool any = false;
++            foreach (var color in _colors)
++            {
++                if (color == null) continue;
++                if (!color.CanRenderLayered) return false;
++                any = true;
++            }
++            if (_depthStencil != null)
++            {
++                if (!_depthStencil.CanRenderLayered) return false;
++                any = true;
++            }
++            if (!any) return false;
++            bool created = _layeredHandle == 0;
++            if (created) _layeredHandle = GL.GenFramebuffer();
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, _layeredHandle);
++            for (int i = 0; i < _colors.Length; i++)
++            {
++                int handle = _colors[i]?.LayeredRenderHandle ?? 0;
++                if (_layeredColors[i] == handle) continue;
++                GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, FramebufferAttachment.ColorAttachment0 + i, handle, 0);
++                _layeredColors[i] = handle;
++            }
++            int depth = _depthStencil?.LayeredRenderHandle ?? 0;
++            if (_layeredDepthAttachment != _lastDsAttachment || _layeredDepth != depth)
++            {
++                if (_layeredDepthAttachment != 0) GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, _layeredDepthAttachment, 0, 0);
++                if (_lastDsAttachment != 0) GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, _lastDsAttachment, depth, 0);
++                _layeredDepthAttachment = _lastDsAttachment;
++                _layeredDepth = depth;
++            }
++            int count = _dualSourceBlend ? 1 : _colorsCount;
++            if (_layeredDrawCount != count) { SetDrawBuffersImpl(count); _layeredDrawCount = count; }
++            if (created && GL.CheckFramebufferStatus(FramebufferTarget.DrawFramebuffer) != FramebufferErrorCode.FramebufferComplete)
++                throw new InvalidOperationException("Layered stereo framebuffer is incomplete.");
++            return true;
++        }
++        private readonly int[] _rightColors = new int[8];
++        private int _rightDepth;
++        private FramebufferAttachment _rightDepthAttachment;
++        private int _rightDrawCount = -1;
++        public int Handle { get => NativeStereo.Enabled && NativeStereo.CurrentEye == 1 && _rightHandle != 0 ? _rightHandle : _leftHandle; private set => _leftHandle = value; }
+         private int _clearFbHandle;
+         private bool _clearFbInitialized;
+ 
+@@ -28,9 +77,83 @@
+             _colors = new TextureView[8];
+         }
+ 
++        internal bool HasStereoTargets
++        {
++            get
++            {
++                if (_depthStencil?.HasStereoStorage == true) return true;
++                foreach (var color in _colors) if (color?.HasStereoStorage == true) return true;
++                return false;
++            }
++        }
++        internal void TraceOutput(int program, long sequence)
++        {
++            TextureView view = _colors[0];
++            if (view == null || view.Target != Target.Texture2D || view.Width < 800 || view.Width < view.Height * 1.5f || view.Width > view.Height * 2.1f) return;
++            string path = System.Environment.GetEnvironmentVariable("RYU_STEREO_TRACE");
++            int width = System.Math.Min(360, view.Width), height = System.Math.Min(480, view.Height);
++            int x = (view.Width - width) / 2, y = System.Math.Clamp((int)(view.Height * 0.72f) - height / 2, 0, view.Height - height);
++            byte[] bytes = new byte[width * height * 4];
++            GL.GetInteger(GetPName.PixelPackBufferBinding, out int pack);
++            GL.BindBuffer(BufferTarget.PixelPackBuffer, 0);
++            try
++            {
++                GL.GetTextureSubImage(view.Handle, 0, x, y, 0, width, height, 1, PixelFormat.Rgba, PixelType.UnsignedByte, bytes.Length, bytes);
++                System.IO.File.WriteAllBytes(System.IO.Path.Combine(path, $"after{sequence:D9}_p{program}_eye{NativeStereo.CurrentEye}_{width}x{height}_at{x}x{y}_of{view.Width}x{view.Height}.rgba8"), bytes);
++            }
++            finally { GL.BindBuffer(BufferTarget.PixelPackBuffer, pack); }
++        }
++        internal void MakeStereoTargets()
++        {
++            foreach (var color in _colors) color?.MakeStereo();
++            _depthStencil?.MakeStereo();
++        }
++        internal bool RightEyeIsBound => _rightHandle != 0 && FramebufferBinding.IsDrawBound(_rightHandle);
++
++        internal void RebindStereoEye(bool allowLayered = false)
++        {
++            NativeStereo.LayeredTarget = allowLayered && NativeStereo.LayeredStorage && NativeStereo.LayeredRendering && TryBindLayered();
++            if (NativeStereo.LayeredTarget) return;
++            // Eye draws never read from the framebuffer binding. Keep the read
++            // target stable; texture-copy operations bind their own read FBO.
++
++            if (NativeStereo.CurrentEye == 0)
++            {
++                FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, _leftHandle);
++                return;
++            }
++            if (_rightHandle == 0) _rightHandle = GL.GenFramebuffer();
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, _rightHandle);
++            for (int i = 0; i < _colors.Length; i++)
++            {
++                int handle = _colors[i]?.Handle ?? 0;
++                if (_rightColors[i] != handle)
++                {
++                    GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, FramebufferAttachment.ColorAttachment0 + i, handle, 0);
++                    _rightColors[i] = handle;
++                }
++            }
++            int depth = _depthStencil?.Handle ?? 0;
++            if (_rightDepthAttachment != _lastDsAttachment || _rightDepth != depth)
++            {
++                if (_rightDepthAttachment != 0)
++                    GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, _rightDepthAttachment, 0, 0);
++                if (_lastDsAttachment != 0)
++                    GL.FramebufferTexture(FramebufferTarget.DrawFramebuffer, _lastDsAttachment, depth, 0);
++                _rightDepthAttachment = _lastDsAttachment;
++                _rightDepth = depth;
++            }
++            int count = _dualSourceBlend ? 1 : _colorsCount;
++            if (_rightDrawCount != count)
++            {
++                SetDrawBuffersImpl(count);
++                _rightDrawCount = count;
++            }
++        }
++
+         public int Bind()
+         {
+-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, Handle);
++            FramebufferBinding.Bind(FramebufferTarget.Framebuffer, Handle);
+             return Handle;
+         }
+ 
+@@ -80,6 +203,9 @@
+         public void SetDualSourceBlend(bool enable)
+         {
+             bool oldEnable = _dualSourceBlend;
++            if (oldEnable == enable) return;
++            // Draw-buffer selection belongs to the left FBO; the right copy is updated on its next bind.
++            if (NativeStereo.Enabled) RebindStereoEye();
+ 
+             _dualSourceBlend = enable;
+ 
+@@ -197,7 +323,7 @@
+ 
+         private void BindClearFb()
+         {
+-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, _clearFbHandle);
++            FramebufferBinding.Bind(FramebufferTarget.Framebuffer, _clearFbHandle);
+ 
+             if (!_clearFbInitialized)
+             {
+@@ -219,14 +345,17 @@
+         {
+             if (Handle != 0)
+             {
+-                GL.DeleteFramebuffer(Handle);
++                FramebufferBinding.Delete(_leftHandle);
++                if (_rightHandle != 0) { FramebufferBinding.Delete(_rightHandle); _rightHandle = 0; }
+ 
+                 Handle = 0;
+             }
+ 
++            if (_layeredHandle != 0) { FramebufferBinding.Delete(_layeredHandle); _layeredHandle = 0; }
++
+             if (_clearFbHandle != 0)
+             {
+-                GL.DeleteFramebuffer(_clearFbHandle);
++                FramebufferBinding.Delete(_clearFbHandle);
+ 
+                 _clearFbHandle = 0;
+             }
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/FramebufferBinding.cs
+@@ -0,0 +1,35 @@
++using OpenTK.Graphics.OpenGL;
++using System;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    // Physical GL state, independent of the logical guest eye. Every backend FBO bind goes through here.
++    internal static class FramebufferBinding
++    {
++        [ThreadStatic] private static bool _drawKnown, _readKnown;
++        [ThreadStatic] private static int _draw, _read;
++        [ThreadStatic] internal static long DrawBinds;
++
++        internal static bool IsDrawBound(int handle) => _drawKnown && _draw == handle;
++
++        internal static void Bind(FramebufferTarget target, int handle)
++        {
++            bool draw = target != FramebufferTarget.ReadFramebuffer;
++            bool read = target != FramebufferTarget.DrawFramebuffer;
++            if (NativeStereo.Enabled && (!draw || (_drawKnown && _draw == handle)) &&
++                (!read || (_readKnown && _read == handle))) return;
++
++            GL.BindFramebuffer(target, handle);
++            if (draw) { _draw = handle; _drawKnown = true; DrawBinds++; }
++            if (read) { _read = handle; _readKnown = true; }
++        }
++
++        internal static void Delete(int handle)
++        {
++            GL.DeleteFramebuffer(handle);
++            // Deletion may reset a binding; invalidate rather than assume whether the object was bound.
++            if (_drawKnown && _draw == handle) _drawKnown = false;
++            if (_readKnown && _read == handle) _readKnown = false;
++        }
++    }
++}
+--- a/src/Ryujinx.Graphics.OpenGL/Image/ImageArray.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Image/ImageArray.cs
+@@ -7,7 +7,8 @@
+     {
+         private record struct TextureRef
+         {
+-            public int Handle;
++            public TextureBase Texture;
++            public int Handle => Texture?.Handle ?? 0;
+             public Format Format;
+         }
+ 
+@@ -26,12 +27,12 @@
+ 
+                 if (image is TextureBase imageBase)
+                 {
+-                    _images[index + i].Handle = imageBase.Handle;
++                    _images[index + i].Texture = imageBase;
+                     _images[index + i].Format = imageBase.Format;
+                 }
+                 else
+                 {
+-                    _images[index + i].Handle = 0;
++                    _images[index + i].Texture = null;
+                 }
+             }
+         }
+@@ -40,6 +41,7 @@
+         {
+             for (int i = 0; i < _images.Length; i++)
+             {
++                SameFrameStereo.TrackImage(baseBinding + i, _images[i].Texture);
+                 if (_images[i].Handle == 0)
+                 {
+                     GL.BindImageTexture(baseBinding + i, 0, 0, true, 0, TextureAccess.ReadWrite, SizedInternalFormat.Rgba8);
+--- a/src/Ryujinx.Graphics.OpenGL/Image/TextureBase.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Image/TextureBase.cs
+@@ -5,7 +5,8 @@
+ {
+     class TextureBase
+     {
+-        public int Handle { get; protected set; }
++        protected int _handle;
++        public virtual int Handle { get => _handle; protected set => _handle = value; }
+ 
+         public TextureCreateInfo Info { get; }
+ 
+@@ -29,14 +30,19 @@
+ 
+         protected void Bind(TextureTarget target, int unit)
+         {
++            SameFrameStereo.TrackTexture(unit, this);
+             GL.ActiveTexture(TextureUnit.Texture0 + unit);
+             GL.BindTexture(target, Handle);
++            if (target == TextureTarget.Texture2DArray) StereoArrayBinding.Invalidate(unit);
++            StereoArrayBinding.Bind(unit, this);
+         }
+ 
+         public static void ClearBinding(int unit)
+         {
++            SameFrameStereo.TrackTexture(unit, null);
+             GL.ActiveTexture(TextureUnit.Texture0 + unit);
+             GL.BindTextureUnit(unit, 0);
++            StereoArrayBinding.Invalidate(unit);
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.OpenGL/Image/TextureCopy.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Image/TextureCopy.cs
+@@ -57,8 +57,8 @@
+ 
+             (int oldDrawFramebufferHandle, int oldReadFramebufferHandle) = ((Pipeline)_renderer.Pipeline).GetBoundFramebuffers();
+ 
+-            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, GetSrcFramebufferLazy());
+-            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, GetDstFramebufferLazy());
++            FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, GetSrcFramebufferLazy());
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, GetDstFramebufferLazy());
+ 
+             if (srcLevel != 0)
+             {
+@@ -125,8 +125,8 @@
+             Attach(FramebufferTarget.ReadFramebuffer, src.Format, 0);
+             Attach(FramebufferTarget.DrawFramebuffer, dst.Format, 0);
+ 
+-            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, oldReadFramebufferHandle);
+-            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, oldDrawFramebufferHandle);
++            FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, oldReadFramebufferHandle);
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, oldDrawFramebufferHandle);
+ 
+             ((Pipeline)_renderer.Pipeline).RestoreScissor0Enable();
+             ((Pipeline)_renderer.Pipeline).RestoreRasterizerDiscard();
+@@ -492,14 +492,14 @@
+         {
+             if (_srcFramebuffer != 0)
+             {
+-                GL.DeleteFramebuffer(_srcFramebuffer);
++                FramebufferBinding.Delete(_srcFramebuffer);
+ 
+                 _srcFramebuffer = 0;
+             }
+ 
+             if (_dstFramebuffer != 0)
+             {
+-                GL.DeleteFramebuffer(_dstFramebuffer);
++                FramebufferBinding.Delete(_dstFramebuffer);
+ 
+                 _dstFramebuffer = 0;
+             }
+--- a/src/Ryujinx.Graphics.OpenGL/Image/TextureStorage.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Image/TextureStorage.cs
+@@ -14,13 +14,50 @@
+         private readonly OpenGLRenderer _renderer;
+ 
+         private int _viewsCount;
+-
+-        internal ITexture DefaultView { get; private set; }
+-
+-        public TextureStorage(OpenGLRenderer renderer, TextureCreateInfo info)
++        internal int LayeredHandle { get; private set; }
++
++        private TextureStorage(OpenGLRenderer renderer, TextureCreateInfo info, int viewHandle)
+         {
+             _renderer = renderer;
+             Info = info;
++            Handle = viewHandle;
++        }
++        internal TextureStorage StereoStorage { get; private set; }
++        internal void EnsureStereoStorage()
++        {
++            if (!NativeStereo.Enabled || BackgroundContextWorker.InBackground || Info.Target == Target.TextureBuffer || Info.Target == Target.Cubemap || Info.Target == Target.CubemapArray) return;
++            if (StereoStorage != null && StereoStorage.Handle != 0) return;
++            if (LayeredHandle != 0)
++            {
++                int right = GL.GenTexture();
++                FormatInfo format = FormatTable.GetFormatInfo(Info.Format);
++                PixelInternalFormat internalFormat = format.IsCompressed ? (PixelInternalFormat)format.PixelFormat : format.PixelInternalFormat;
++                GL.TextureView(right, TextureTarget.Texture2D, LayeredHandle, internalFormat, 0, Info.Levels, 1, 1);
++                StereoStorage = new TextureStorage(_renderer, Info, right);
++            }
++            else StereoStorage = new TextureStorage(_renderer, Info);
++            CopyToStereoStorage();
++            SameFrameStereo.StorageCount++;
++        }
++        internal void CopyToStereoStorage()
++        {
++            if (StereoStorage == null || StereoStorage.Handle == 0 || Handle == 0) return;
++            for (int level = 0; level < Info.Levels; level++)
++            {
++                int depth = Info.Target == Target.Texture3D ? System.Math.Max(1, Info.Depth >> level) : Info.GetLayers();
++                GL.CopyImageSubData(Handle, (ImageTarget)Info.Target.Convert(), level, 0, 0, 0,
++                    StereoStorage.Handle, (ImageTarget)Info.Target.Convert(), level, 0, 0, 0,
++                    System.Math.Max(1, Info.Width >> level), System.Math.Max(1, Info.Height >> level), depth);
++            }
++        }
++
++
++        internal ITexture DefaultView { get; private set; }
++
++        public TextureStorage(OpenGLRenderer renderer, TextureCreateInfo info)
++        {
++            _renderer = renderer;
++            Info = info;
+ 
+             Handle = GL.GenTexture();
+ 
+@@ -33,22 +70,34 @@
+ 
+             GL.ActiveTexture(TextureUnit.Texture0);
+ 
++            FormatInfo format = FormatTable.GetFormatInfo(Info.Format);
++
++            SizedInternalFormat internalFormat;
++
++            if (format.IsCompressed)
++            {
++                internalFormat = (SizedInternalFormat)format.PixelFormat;
++            }
++            else
++            {
++                internalFormat = (SizedInternalFormat)format.PixelInternalFormat;
++            }
++
++            int levels = Info.Levels;
++            // Screen-sized 2D targets can use two layers while all ordinary samplers keep 2D views.
++            // Other target types retain the existing separate-eye path.
++            if (NativeStereo.Enabled && NativeStereo.LayeredStorage && Info.Target == Target.Texture2D &&
++                (NativeStereo.ArraySampling || (Info.Width >= 256 && Info.Width > Info.Height * 1.5f && Info.Width < Info.Height * 2.1f)))
++            {
++                LayeredHandle = GL.GenTexture();
++                GL.BindTexture(TextureTarget.Texture2DArray, LayeredHandle);
++                StereoArrayBinding.Invalidate(0);
++                GL.TexStorage3D(TextureTarget3d.Texture2DArray, levels, internalFormat, Info.Width, Info.Height, 2);
++                GL.TextureView(Handle, TextureTarget.Texture2D, LayeredHandle, (PixelInternalFormat)internalFormat, 0, levels, 0, 1);
++                return;
++            }
+             GL.BindTexture(target, Handle);
+-
+-            FormatInfo format = FormatTable.GetFormatInfo(Info.Format);
+-
+-            SizedInternalFormat internalFormat;
+-
+-            if (format.IsCompressed)
+-            {
+-                internalFormat = (SizedInternalFormat)format.PixelFormat;
+-            }
+-            else
+-            {
+-                internalFormat = (SizedInternalFormat)format.PixelInternalFormat;
+-            }
+-
+-            int levels = Info.Levels;
++            StereoArrayBinding.Invalidate(0);
+ 
+             switch (Info.Target)
+             {
+@@ -197,7 +246,10 @@
+ 
+         public void Dispose()
+         {
++            StereoStorage?.Dispose();
++            StereoStorage = null;
+             DefaultView = null;
++            if (LayeredHandle != 0) { GL.DeleteTexture(LayeredHandle); LayeredHandle = 0; }
+ 
+             if (Handle != 0)
+             {
+--- a/src/Ryujinx.Graphics.OpenGL/Image/TextureView.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Image/TextureView.cs
+@@ -12,6 +12,74 @@
+         private readonly OpenGLRenderer _renderer;
+ 
+         private readonly TextureStorage _parent;
++        private TextureView _stereoView;
++        private int _layeredView;
++        private int _arrayMonoView, _arrayStereoView;
++        internal bool CanSampleEyeLayers => Target == Target.Texture2D && _parent.LayeredHandle != 0;
++        internal int ArraySamplingHandle
++        {
++            get
++            {
++                if (_parent.LayeredHandle == 0 && NativeStereo.CurrentEye == 1 && HasStereoStorage)
++                {
++                    _ = Handle; // Ensure the conventional right-eye view exists.
++                    return _stereoView.ArraySamplingHandle;
++                }
++                bool both = _parent.LayeredHandle != 0 && HasStereoStorage;
++                ref int handle = ref (both ? ref _arrayStereoView : ref _arrayMonoView);
++                if (handle == 0)
++                {
++                    handle = GL.GenTexture();
++                    FormatInfo format = FormatTable.GetFormatInfo(Info.Format);
++                    PixelInternalFormat internalFormat = format.IsCompressed ? (PixelInternalFormat)format.PixelFormat : format.PixelInternalFormat;
++                    GL.TextureView(handle, TextureTarget.Texture2DArray, _parent.LayeredHandle != 0 ? _parent.LayeredHandle : _parent.Handle,
++                        internalFormat, FirstLevel, Info.Levels, _parent.LayeredHandle != 0 ? 0 : FirstLayer, both ? 2 : 1);
++                    foreach (var parameter in new[] { TextureParameterName.TextureSwizzleR, TextureParameterName.TextureSwizzleG,
++                        TextureParameterName.TextureSwizzleB, TextureParameterName.TextureSwizzleA, TextureParameterName.DepthStencilTextureMode })
++                    {
++                        GL.GetTextureParameter(_handle, (GetTextureParameter)parameter, out int value);
++                        GL.TextureParameter(handle, parameter, value);
++                    }
++                    GL.TextureParameter(handle, TextureParameterName.TextureMaxLevel, Info.Levels - 1);
++                }
++                return handle;
++            }
++        }
++        internal bool CanRenderLayered => Target == Target.Texture2D && FirstLayer == 0 && _parent.LayeredHandle != 0;
++        internal int LayeredRenderHandle
++        {
++            get
++            {
++                if (!CanRenderLayered) return 0;
++                if (_layeredView == 0)
++                {
++                    _layeredView = GL.GenTexture();
++                    FormatInfo format = FormatTable.GetFormatInfo(Info.Format);
++                    PixelInternalFormat internalFormat = format.IsCompressed ? (PixelInternalFormat)format.PixelFormat : format.PixelInternalFormat;
++                    GL.TextureView(_layeredView, TextureTarget.Texture2DArray, _parent.LayeredHandle, internalFormat, FirstLevel, Info.Levels, 0, 2);
++                }
++                return _layeredView;
++            }
++        }
++        internal bool IsEnvironmentStorage => _parent.Info.Target == Target.Cubemap || _parent.Info.Target == Target.CubemapArray;
++        internal bool HasStereoStorage => _parent?.StereoStorage?.Handle > 0;
++        internal void MakeStereo() => _parent.EnsureStereoStorage();
++        internal void SyncStereoUpload() => _parent.CopyToStereoStorage();
++        public override int Handle
++        {
++            get
++            {
++                if (NativeStereo.Enabled && NativeStereo.CurrentEye == 1 && HasStereoStorage)
++                {
++                    if (_stereoView == null || _stereoView._handle == 0)
++                        _stereoView = new TextureView(_renderer, _parent.StereoStorage, Info, FirstLayer, FirstLevel);
++                    return _stereoView._handle;
++                }
++                return _handle;
++            }
++            protected set => _handle = value;
++        }
++
+ 
+         public ITextureInfo Storage => _parent;
+ 
+@@ -66,6 +134,7 @@
+             GL.ActiveTexture(TextureUnit.Texture0);
+ 
+             GL.BindTexture(target, Handle);
++            StereoArrayBinding.Invalidate(0);
+ 
+             int[] swizzleRgba =
+             [
+@@ -114,6 +183,7 @@
+ 
+         public void CopyTo(ITexture destination, int firstLayer, int firstLevel)
+         {
++            if (SameFrameStereo.CopyBoth(this, destination as TextureView, () => CopyTo(destination, firstLayer, firstLevel))) return;
+             TextureView destinationView = (TextureView)destination;
+ 
+             bool srcIsMultisample = Target.IsMultisample();
+@@ -170,6 +240,7 @@
+ 
+         public void CopyTo(ITexture destination, int srcLayer, int dstLayer, int srcLevel, int dstLevel)
+         {
++            if (SameFrameStereo.CopyBoth(this, destination as TextureView, () => CopyTo(destination, srcLayer, dstLayer, srcLevel, dstLevel))) return;
+             TextureView destinationView = (TextureView)destination;
+ 
+             bool srcIsMultisample = Target.IsMultisample();
+@@ -261,6 +332,7 @@
+ 
+         public void CopyTo(ITexture destination, Extents2D srcRegion, Extents2D dstRegion, bool linearFilter)
+         {
++            if (SameFrameStereo.CopyBoth(this, destination as TextureView, () => CopyTo(destination, srcRegion, dstRegion, linearFilter))) return;
+             _renderer.TextureCopy.Copy(this, (TextureView)destination, srcRegion, dstRegion, linearFilter);
+         }
+ 
+@@ -461,6 +533,7 @@
+                     }
+                 }
+             }
++                    SyncStereoUpload();
+         }
+ 
+         public void SetData(MemoryOwner<byte> data, int layer, int level)
+@@ -478,6 +551,7 @@
+                     }
+                 }
+             }
++                    SyncStereoUpload();
+         }
+ 
+         public void SetData(MemoryOwner<byte> data, int layer, int level, Rectangle<int> region)
+@@ -503,6 +577,7 @@
+                     }
+                 }
+             }
++                    SyncStereoUpload();
+         }
+ 
+         public void ReadFromPbo(int offset, int size)
+@@ -704,6 +779,7 @@
+             {
+                 GL.ActiveTexture(TextureUnit.Texture0);
+                 GL.BindTexture(target, Storage.Handle);
++                StereoArrayBinding.Invalidate(0);
+                 baseLevel = FirstLevel;
+             }
+             else
+@@ -878,11 +954,16 @@
+ 
+         private void DisposeHandles()
+         {
+-            if (Handle != 0)
+-            {
+-                GL.DeleteTexture(Handle);
+-
+-                Handle = 0;
++            _stereoView?.DisposeHandles();
++            _stereoView = null;
++            if (_arrayMonoView != 0) { StereoArrayBinding.Deleted(); GL.DeleteTexture(_arrayMonoView); _arrayMonoView = 0; }
++            if (_arrayStereoView != 0) { StereoArrayBinding.Deleted(); GL.DeleteTexture(_arrayStereoView); _arrayStereoView = 0; }
++            if (_layeredView != 0) { GL.DeleteTexture(_layeredView); _layeredView = 0; }
++            if (_handle != 0)
++            {
++                GL.DeleteTexture(_handle);
++
++                _handle = 0;
+             }
+         }
+ 
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/NativeStereo.cs
+@@ -0,0 +1,290 @@
++using OpenTK.Graphics.OpenGL;
++using Ryujinx.Common.Logging;
++using Ryujinx.Graphics.GAL;
++using Ryujinx.Graphics.Shader;
++using System;
++using System.Globalization;
++using System.IO;
++using System.Linq;
++using System.Text;
++using System.Text.RegularExpressions;
++using System.Threading;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    // Experimental same-state geometry stereo with isolated per-eye image storage.
++    internal sealed class NativeStereo : IDisposable
++    {
++        internal static readonly bool Enabled = Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1";
++        private static float Separation = ReadFloat("RYU_STEREO_SEPARATION", 0.012f, 0f, 0.1f);
++        internal static float Convergence = ReadFloat("RYU_STEREO_CONVERGENCE", 600f, 0f, 10000f);
++        internal static bool GeometryPass = true;
++        internal static bool TraceFrame;
++        internal static bool DisableCharacterShadows;
++        internal static bool DirectOutput = true;
++        internal static bool AlternatingEyes;
++        internal static readonly bool LayeredStorage = Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1";
++        internal static bool LayeredRendering = true;
++        internal static bool LayeredTarget;
++        internal static readonly bool InstancedStorage = LayeredStorage && Environment.GetEnvironmentVariable("RYU_STEREO_INSTANCED") == "1";
++        internal static readonly bool ArraySampling = InstancedStorage && Environment.GetEnvironmentVariable("RYU_STEREO_ARRAY_SAMPLING") == "1";
++        internal static bool InstancedRendering = true;
++        internal static bool InstancedDraw;
++        internal static float ViewportX, ViewportY, ViewportWidth = 1, ViewportHeight = 1;
++        [ThreadStatic] private static int _eye;
++        internal static int CurrentEye => _eye;
++        internal static void SetEye(int eye) => _eye = eye;
++        private static int _rewritten;
++        internal static float EyeShift => (Volatile.Read(ref _eye) == 0 ? -1f : 1f) * Separation;
++        private readonly int[] _textures = new int[2];
++        private readonly int[] _framebuffers = new int[2];
++        private int _width, _height, _frame;
++        private long _lastPresent;
++        private readonly double[] _frameIntervals = new double[120];
++
++        private static DateTime _settingsStamp;
++        static NativeStereo() { if (Enabled) ReloadSettings(); }
++        private static void ReloadSettings()
++        {
++            string path = Environment.GetEnvironmentVariable("RYU_STEREO_SETTINGS");
++            if (string.IsNullOrEmpty(path)) path = Path.Combine(AppContext.BaseDirectory, "StereoSettings.json");
++            try
++            {
++                if (!File.Exists(path)) return;
++                DateTime stamp = File.GetLastWriteTimeUtc(path);
++                if (stamp == _settingsStamp) return;
++                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
++                if (doc.RootElement.TryGetProperty("separation", out var s) && s.TryGetSingle(out float separation) && float.IsFinite(separation)) Separation = Math.Clamp(separation, 0, 0.1f);
++                if (doc.RootElement.TryGetProperty("convergence", out var c) && c.TryGetSingle(out float convergence) && float.IsFinite(convergence)) Convergence = Math.Clamp(convergence, 0, 10000f);
++                DisableCharacterShadows = doc.RootElement.TryGetProperty("disable_character_shadows", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.True;
++                if (doc.RootElement.TryGetProperty("direct_output", out var output)) DirectOutput = output.ValueKind == System.Text.Json.JsonValueKind.True;
++                if (doc.RootElement.TryGetProperty("alternating_eyes", out var alternating)) AlternatingEyes = alternating.ValueKind == System.Text.Json.JsonValueKind.True;
++                if (doc.RootElement.TryGetProperty("layered_framebuffer", out var layered)) LayeredRendering = layered.ValueKind == System.Text.Json.JsonValueKind.True;
++                if (doc.RootElement.TryGetProperty("instanced_eyes", out var instanced)) InstancedRendering = instanced.ValueKind == System.Text.Json.JsonValueKind.True;
++                _settingsStamp = stamp;
++                Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo settings: separation={Separation}, convergence={Convergence}, disableCharacterShadows={DisableCharacterShadows}");
++            }
++            catch (IOException) { }
++            catch (System.Text.Json.JsonException) { }
++        }
++
++        private static float ReadFloat(string name, float fallback, float min, float max)
++        {
++            return float.TryParse(Environment.GetEnvironmentVariable(name), NumberStyles.Float,
++                CultureInfo.InvariantCulture, out float value) && float.IsFinite(value)
++                ? Math.Clamp(value, min, max) : fallback;
++        }
++
++        internal static string Rewrite(string code, ShaderStage stage, ShaderSource[] stages)
++        {
++            ShaderStage finalStage = stages.Any(s => s.Stage == ShaderStage.Geometry) ? ShaderStage.Geometry :
++                stages.Any(s => s.Stage == ShaderStage.TessellationEvaluation) ? ShaderStage.TessellationEvaluation : ShaderStage.Vertex;
++            if (Enabled && stage == ShaderStage.Fragment)
++            {
++                ShaderSource vertex = stages.FirstOrDefault(s => s.Stage == ShaderStage.Vertex);
++                if (!string.IsNullOrEmpty(vertex.Code))
++                {
++                    code = StereoShadowReconstruction.Rewrite(code, vertex.Code);
++                    code = StereoDeferredReconstruction.Rewrite(code, vertex.Code);
++                    string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(vertex.Code.Replace("\r\n", "\n"))));
++                    if (StereoProjectionFixes.Outputs.ContainsKey(hash))
++                    {
++                        var sample = new Regex(@"texture\(fp_t_tcb_10,\s*vec2\([^()]*\)\)");
++                        if (sample.IsMatch(code))
++                        {
++                            code = sample.Replace(code, "texture(fp_t_tcb_10, gl_FragCoord.xy * ryu_stereo_depth_viewport.xy + ryu_stereo_depth_viewport.zw)");
++                            int mainOffset = code.IndexOf("void main()", StringComparison.Ordinal);
++                            code = code.Insert(mainOffset, "uniform vec4 ryu_stereo_depth_viewport;\n");
++                            Logger.Notice.Print(LogClass.Gpu, "GeometryStereo: depth sampling uses raster coordinates");
++                        }
++                    }
++                }
++                return StereoArraySampling.Rewrite(code, stage);
++            }
++            if (!Enabled || stage != finalStage) return StereoArraySampling.Rewrite(code, stage);
++            var main = new Regex(@"\bvoid\s+main\s*\(\s*(?:void\s*)?\)");
++            if (!main.IsMatch(code)) return code;
++            string correction = "if (abs(gl_Position.w - 1.0) > 0.0001) gl_Position.x += ryu_geometry_stereo.x * (gl_Position.w - ryu_geometry_stereo.y);\n";
++            string projectedVaryings = stage == ShaderStage.Vertex ? StereoProjectedVaryings.Correction(code) : "";
++            correction += projectedVaryings;
++            bool projectedDepth = false;
++            if (stage == ShaderStage.Vertex)
++            {
++                string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(code.Replace("\r\n", "\n"))));
++                if (StereoProjectionFixes.Outputs.TryGetValue(hash, out string[] projected))
++                {
++                    projectedDepth = true;
++                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo: correcting projected depth coordinates: {hash.Substring(0, 12)}");
++                }
++            }
++            if (LayeredStorage)
++            {
++                // Only the final vertex-processing stage selects the framebuffer layer.
++                // Keep guest layer assignments intact when using a conventional framebuffer.
++                bool guestLayer = Regex.IsMatch(code, @"gl_Layer\s*=");
++                bool pairable = InstancedStorage && stage == ShaderStage.Vertex &&
++                    stages.All(s => s.Language == Ryujinx.Graphics.Shader.Translation.TargetLanguage.Glsl &&
++                        !Regex.IsMatch(s.Code, @"\bbuffer\b|\bimage\w*\b|\batomic\w*\b"));
++                if (pairable)
++                {
++                    // Preserve the guest instance ID in the doubled-instance path; ordinary draws are unchanged.
++                    code = Regex.Replace(code, @"\bgl_InstanceID\b", "(ryu_stereo_layer == -2 ? (gl_InstanceID >> 1) : gl_InstanceID)");
++                    correction = correction.Replace("ryu_geometry_stereo.x", "(ryu_geometry_stereo.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
++                    if (ArraySampling)
++                        correction = correction.Replace("ryu_stereo_projected_varying.x", "(ryu_stereo_projected_varying.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
++                    correction += "if (ryu_stereo_layer == -2) gl_Layer = gl_InstanceID & 1; else " +
++                        (guestLayer ? "if (ryu_stereo_layer >= 0) gl_Layer = ryu_stereo_layer;\n" : "gl_Layer = max(ryu_stereo_layer, 0);\n");
++                }
++                else correction += guestLayer ? "if (ryu_stereo_layer >= 0) gl_Layer = ryu_stereo_layer;\n" : "gl_Layer = max(ryu_stereo_layer, 0);\n";
++                if (!code.Contains("GL_ARB_shader_viewport_layer_array", StringComparison.Ordinal))
++                    code = code.Insert(code.IndexOf('\n') + 1, "#extension GL_ARB_shader_viewport_layer_array : require\n");
++                // Declare before helper functions, which may also read the guest instance ID.
++                int declaration = 0;
++                foreach (string line in code.Split('\n'))
++                {
++                    if (!string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("#", StringComparison.Ordinal)) break;
++                    declaration += line.Length + 1;
++                }
++                code = code.Insert(Math.Min(declaration, code.Length), "uniform int ryu_stereo_layer;\n");
++                if (pairable)
++                {
++                    code = code.Replace("ryu_stereo_layer", "ryu_stereo_layer_pairable");
++                    correction = correction.Replace("ryu_stereo_layer", "ryu_stereo_layer_pairable");
++                }
++            }
++            if (stage == ShaderStage.Geometry)
++            {
++                var emit = new Regex(@"\bEmitVertex\s*\(\s*\)");
++                if (!emit.IsMatch(code)) return code;
++                code = emit.Replace(code, "ryu_geometry_emit()");
++                int insert = main.Match(code).Index;
++                code = code.Insert(insert, "uniform vec2 ryu_geometry_stereo;\nvoid ryu_geometry_emit() { vec4 original = gl_Position;\n" +
++                    correction + "EmitVertex(); gl_Position = original; }\n");
++            }
++            else
++            {
++                code = main.Replace(code, "void ryu_geometry_original_main()", 1);
++                code += "\nuniform vec2 ryu_geometry_stereo;\n" + (projectedVaryings.Length > 0 ? "uniform vec2 ryu_stereo_projected_varying;\n" : "") + "void main() { ryu_geometry_original_main();\n" + correction + "}\n";
++            }
++            if (projectedDepth) code = code.Replace("ryu_geometry_stereo", "ryu_geometry_stereo_projected");
++            Interlocked.Increment(ref _rewritten);
++            return StereoArraySampling.Rewrite(code, stage);
++        }
++
++        private void EnsureSize(int width, int height)
++        {
++            if (_width == width && _height == height) return;
++            Dispose();
++            _width = width; _height = height;
++            for (int i = 0; i < 2; i++)
++            {
++                GL.CreateTextures(TextureTarget.Texture2D, 1, out _textures[i]);
++                GL.TextureStorage2D(_textures[i], 1, SizedInternalFormat.Rgba8, width, height);
++                GL.CreateFramebuffers(1, out _framebuffers[i]);
++                GL.NamedFramebufferTexture(_framebuffers[i], FramebufferAttachment.ColorAttachment0, _textures[i], 0);
++                GL.NamedFramebufferReadBuffer(_framebuffers[i], ReadBufferMode.ColorAttachment0);
++                GL.NamedFramebufferDrawBuffer(_framebuffers[i], DrawBufferMode.ColorAttachment0);
++                if (GL.CheckNamedFramebufferStatus(_framebuffers[i], FramebufferTarget.Framebuffer) != FramebufferStatus.FramebufferComplete)
++                    throw new InvalidOperationException("Geometry stereo eye framebuffer is incomplete.");
++            }
++        }
++
++        internal void Present(Action<int> renderEye, int width, int height, Action swapBuffers, bool direct = false)
++        {
++            if (width <= 0 || height <= 0) return;
++            if (!direct) EnsureSize(width, height);
++            long now = System.Diagnostics.Stopwatch.GetTimestamp();
++            if (_lastPresent != 0) _frameIntervals[_frame % 120] = (now - _lastPresent) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
++            _lastPresent = now;
++            try
++            {
++                for (int eye = 0; eye < 2; eye++)
++                {
++                    SetEye(eye);
++                    renderEye(direct ? 0 : _framebuffers[eye]);
++                }
++                SetEye(0);
++                GL.Disable(IndexedEnableCap.ScissorTest, 0);
++                GL.Disable(EnableCap.RasterizerDiscard);
++                for (int eye = 0; !direct && eye < 2; eye++)
++                {
++                    FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, _framebuffers[eye]);
++                    FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, 0);
++                    GL.BlitFramebuffer(0, 0, width, height, eye * (width / 2), 0,
++                        (eye + 1) * (width / 2), height, ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
++                }
++                if (TraceFrame)
++                {
++                    string capturePath = Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE");
++                    if (!string.IsNullOrEmpty(capturePath)) Capture(capturePath);
++                }
++                TraceFrame = false;
++                string tracePath = Environment.GetEnvironmentVariable("RYU_STEREO_TRACE");
++                if (_frame % 120 == 0 && !string.IsNullOrEmpty(tracePath) && File.Exists(Path.Combine(tracePath, "trace.request")))
++                {
++                    SameFrameStereo.BeginTrace();
++                    TraceFrame = true;
++                    File.Delete(Path.Combine(tracePath, "trace.request"));
++                }
++                _frame++;
++                if (_frame % 120 == 0)
++                {
++                    ReloadSettings();
++                    var intervals = (double[])_frameIntervals.Clone();
++                    Array.Sort(intervals);
++                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo pacing ms: median={intervals[60]:F2}, p95={intervals[114]:F2}, max={intervals[119]:F2}");
++                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo SAME FRAME: {_frame} pairs, {SameFrameStereo.DrawPairs} dual commands, {SameFrameStereo.StorageCount} eye allocations, {_rewritten} shaders; {width}x{height}; separation={Separation}, convergence={Convergence}; directOutput={direct}; alternatingEyes={AlternatingEyes}; framebufferBinds={FramebufferBinding.DrawBinds}; layeredStorage={LayeredStorage}; layeredRendering={LayeredRendering}; layeredDraws={SameFrameStereo.LayeredDrawPairs}; instancedEyes={InstancedRendering}; instancedDraws={SameFrameStereo.InstancedDrawPairs}; arraySampling={ArraySampling}");
++                    string capture = Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE");
++                    if (!string.IsNullOrWhiteSpace(capture) && File.Exists(Path.Combine(capture, "capture.request")))
++                    {
++                        Capture(capture);
++                        File.Delete(Path.Combine(capture, "capture.request"));
++                    }
++                }
++                FramebufferBinding.Bind(FramebufferTarget.Framebuffer, 0);
++                swapBuffers();
++            }
++            finally { SetEye(0); }
++        }
++
++        private void Capture(string directory)
++        {
++            Directory.CreateDirectory(directory);
++            int oldPack = GL.GetInteger(GetPName.PackAlignment);
++            int oldPackBuffer = GL.GetInteger(GetPName.PixelPackBufferBinding);
++            GL.BindBuffer(BufferTarget.PixelPackBuffer, 0);
++            GL.PixelStore(PixelStoreParameter.PackAlignment, 1);
++            try
++            {
++                for (int i = 0; i < 2; i++)
++                {
++                    FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, _framebuffers[i]);
++                    byte[] rgb = new byte[_width * _height * 3];
++                    GL.ReadPixels(0, 0, _width, _height, PixelFormat.Rgb, PixelType.UnsignedByte, rgb);
++                    using var file = File.Create(Path.Combine(directory, i == 0 ? "left.ppm" : "right.ppm"));
++                    file.Write(Encoding.ASCII.GetBytes($"P6\n{_width} {_height}\n255\n"));
++                    file.Write(rgb);
++                }
++            }
++            finally
++            {
++                GL.PixelStore(PixelStoreParameter.PackAlignment, oldPack);
++                GL.BindBuffer(BufferTarget.PixelPackBuffer, oldPackBuffer);
++            }
++        }
++
++        public void Dispose()
++        {
++            for (int i = 0; i < 2; i++)
++            {
++                if (_framebuffers[i] != 0) FramebufferBinding.Delete(_framebuffers[i]);
++                if (_textures[i] != 0) GL.DeleteTexture(_textures[i]);
++                _framebuffers[i] = _textures[i] = 0;
++
++            }
++            _width = _height = 0;
++
++        }
++    }
++}
++
+--- a/src/Ryujinx.Graphics.OpenGL/Pipeline.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Pipeline.cs
+@@ -32,6 +32,7 @@
+         private int _stencilFrontMask;
+         private bool _depthMask;
+         private bool _depthTestEnable;
++        private bool _nativeAlwaysDepth;
+         private bool _stencilTestEnable;
+         private bool _cullEnable;
+ 
+@@ -102,7 +103,15 @@
+ 
+         public void ClearRenderTargetColor(int index, int layer, int layerCount, uint componentMask, ColorF color)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && _framebuffer?.HasStereoTargets == true)
++            {
++                SameFrameStereo.Execute(() => ClearRenderTargetColor(index, layer, layerCount, componentMask, color), () => _framebuffer?.RebindStereoEye());
++                return;
++            }
++
+             EnsureFramebuffer();
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer.RebindStereoEye();
+ 
+             GL.ColorMask(
+                 index,
+@@ -134,7 +143,15 @@
+ 
+         public void ClearRenderTargetDepthStencil(int layer, int layerCount, float depthValue, bool depthMask, int stencilValue, int stencilMask)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && _framebuffer?.HasStereoTargets == true)
++            {
++                SameFrameStereo.Execute(() => ClearRenderTargetDepthStencil(layer, layerCount, depthValue, depthMask, stencilValue, stencilMask), () => _framebuffer?.RebindStereoEye());
++                return;
++            }
++
+             EnsureFramebuffer();
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer.RebindStereoEye();
+ 
+             bool stencilMaskChanged =
+                 stencilMask != 0 &&
+@@ -207,12 +224,23 @@
+ 
+         public void DispatchCompute(int groupsX, int groupsY, int groupsZ)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && SameFrameStereo.NeedsStereoCompute(_program))
++            {
++                SameFrameStereo.Execute(() => DispatchCompute(groupsX, groupsY, groupsZ), () => _framebuffer?.RebindStereoEye(), _program, _framebuffer);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Dispatch error, shader not linked.");
+                 return;
+             }
+ 
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
++
+             PrepareForDispatch();
+ 
+             GL.DispatchCompute(groupsX, groupsY, groupsZ);
+@@ -220,11 +248,26 @@
+ 
+         public void Draw(int vertexCount, int instanceCount, int firstVertex, int firstInstance)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                if (instanceCount == 1 && firstInstance == 0 && _vertexArray?.HasInstancedBuffers != true &&
++                    _primitiveType != PrimitiveType.Quads && _primitiveType != PrimitiveType.QuadStrip &&
++                    SameFrameStereo.TryExecuteInstanced(() => Draw(vertexCount, 2, firstVertex, 0),
++                        () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program)) return;
++                SameFrameStereo.Execute(() => Draw(vertexCount, instanceCount, firstVertex, firstInstance), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
++
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
+ 
+             PreDraw(vertexCount);
+ 
+@@ -338,11 +381,26 @@
+             int firstVertex,
+             int firstInstance)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                if (instanceCount == 1 && firstInstance == 0 && _vertexArray?.HasInstancedBuffers != true &&
++                    _primitiveType != PrimitiveType.Quads && _primitiveType != PrimitiveType.QuadStrip &&
++                    SameFrameStereo.TryExecuteInstanced(() => DrawIndexed(indexCount, 2, firstIndex, firstVertex, 0),
++                        () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program)) return;
++                SameFrameStereo.Execute(() => DrawIndexed(indexCount, instanceCount, firstIndex, firstVertex, firstInstance), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
++
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
+ 
+             PreDrawVbUnbounded();
+ 
+@@ -577,12 +635,23 @@
+ 
+         public void DrawIndexedIndirect(BufferRange indirectBuffer)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                SameFrameStereo.Execute(() => DrawIndexedIndirect(indirectBuffer), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
+ 
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
++
+             PreDrawVbUnbounded();
+ 
+             _vertexArray.SetRangeOfIndexBuffer();
+@@ -598,11 +667,22 @@
+ 
+         public void DrawIndexedIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                SameFrameStereo.Execute(() => DrawIndexedIndirectCount(indirectBuffer, parameterBuffer, maxDrawCount, stride), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
++
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
+ 
+             PreDrawVbUnbounded();
+ 
+@@ -626,12 +706,23 @@
+ 
+         public void DrawIndirect(BufferRange indirectBuffer)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                SameFrameStereo.Execute(() => DrawIndirect(indirectBuffer), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
+ 
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
++
+             PreDrawVbUnbounded();
+ 
+             GL.BindBuffer((BufferTarget)All.DrawIndirectBuffer, indirectBuffer.Handle.ToInt32());
+@@ -643,11 +734,22 @@
+ 
+         public void DrawIndirectCount(BufferRange indirectBuffer, BufferRange parameterBuffer, int maxDrawCount, int stride)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw())
++            {
++                SameFrameStereo.Execute(() => DrawIndirectCount(indirectBuffer, parameterBuffer, maxDrawCount, stride), () => _framebuffer?.RebindStereoEye(_program?.HasLayeredStereo == true), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (!_program.IsLinked)
+             {
+                 Logger.Debug?.Print(LogClass.Gpu, "Draw error, shader not linked.");
+                 return;
+             }
++
++            if (NativeStereo.DisableCharacterShadows && SameFrameStereo.IsCharacterShadow(_program, _unit0Texture)) return;
++            _program.ApplyNativeStereo(_depthTestEnable && (!_nativeAlwaysDepth || _depthMask) && !_tfEnabled && !_rasterizerDiscard, _unit0Texture);
+ 
+             PreDrawVbUnbounded();
+ 
+@@ -666,6 +768,14 @@
+ 
+         public void DrawTexture(ITexture texture, ISampler sampler, Extents2DF srcRegion, Extents2DF dstRegion)
+         {
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing && !_tfEnabled && !_rasterizerDiscard && PrepareStereoDraw(texture as TextureView))
++            {
++                SameFrameStereo.Execute(() => DrawTexture(texture, sampler, srcRegion, dstRegion), () => _framebuffer?.RebindStereoEye(), _program, _framebuffer, retainDrawTarget: true);
++                return;
++            }
++
++            if (NativeStereo.Enabled && !SameFrameStereo.Executing) _framebuffer?.RebindStereoEye();
++
+             if (texture is TextureView view && sampler is Sampler samp)
+             {
+                 if (HwCapabilities.SupportsDrawTexture)
+@@ -913,6 +1023,7 @@
+             GL.DepthMask(depthTest.WriteEnable);
+             _depthMask = depthTest.WriteEnable;
+             _depthTestEnable = depthTest.TestEnable;
++            _nativeAlwaysDepth = depthTest.Func == CompareOp.Always || depthTest.Func == CompareOp.AlwaysGl;
+         }
+ 
+         public void SetFaceCulling(bool enable, Face face)
+@@ -937,6 +1048,7 @@
+ 
+         public void SetImage(ShaderStage stage, int binding, ITexture texture)
+         {
++            SameFrameStereo.TrackImage(binding, texture as TextureBase);
+             if ((uint)binding < SavedImages)
+             {
+                 _images[binding] = texture as TextureBase;
+@@ -1166,9 +1278,26 @@
+             }
+         }
+ 
++        private bool PrepareStereoDraw(TextureView explicitSource = null)
++        {
++            SameFrameStereo.TrackTexture(0, _unit0Texture);
++            bool geometry = NativeStereo.GeometryPass && _program?.HasGeometryStereo == true &&
++                ((_depthTestEnable && (!_nativeAlwaysDepth || _depthMask)) || _program.StereoProjectedDepth);
++            bool stereo = geometry || _framebuffer?.HasStereoTargets == true ||
++                explicitSource?.HasStereoStorage == true || SameFrameStereo.NeedsStereoCompute(_program);
++            if (stereo) _framebuffer?.MakeStereoTargets();
++            return stereo;
++        }
++
+         public void SetRenderTargets(ITexture[] colors, ITexture depthStencil)
+         {
++            // Shadow/depth-only passes use the shared light camera, not an eye camera.
++            NativeStereo.GeometryPass = false;
++            foreach (ITexture color in colors)
++                if (color is TextureView view && !view.IsEnvironmentStorage) { NativeStereo.GeometryPass = true; break; }
+             EnsureFramebuffer();
++
++            if (NativeStereo.Enabled) _framebuffer.RebindStereoEye();
+ 
+             for (int index = 0; index < colors.Length; index++)
+             {
+@@ -1190,6 +1319,8 @@
+             }
+ 
+             TextureView depthStencilView = (TextureView)depthStencil;
++            if (!NativeStereo.GeometryPass && depthStencilView != null && !System.Array.Exists(colors, c => c is TextureView cv && cv.IsEnvironmentStorage))
++                NativeStereo.GeometryPass = depthStencilView.Width > depthStencilView.Height * 1.5f && depthStencilView.Width < depthStencilView.Height * 2.1f;
+ 
+             _framebuffer.AttachDepthStencil(depthStencilView);
+             _framebuffer.SetDrawBuffers(colors.Length);
+@@ -1424,6 +1555,11 @@
+             bool flipY = viewports.Length != 0 && viewports[0].Region.Height < 0;
+ 
+             SetOrigin(flipY ? ClipOrigin.UpperLeft : ClipOrigin.LowerLeft);
++            if (viewportArray.Length >= 4)
++            {
++                NativeStereo.ViewportX = viewportArray[0]; NativeStereo.ViewportY = viewportArray[1];
++                NativeStereo.ViewportWidth = viewportArray[2]; NativeStereo.ViewportHeight = viewportArray[3];
++            }
+ 
+             GL.ViewportArray(0, viewports.Length, viewportArray);
+             GL.DepthRangeArray(0, viewports.Length, depthRangeArray);
+--- a/src/Ryujinx.Graphics.OpenGL/Program.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Program.cs
+@@ -5,6 +5,7 @@
+ using Ryujinx.Graphics.Shader.Translation;
+ using System;
+ using System.Buffers.Binary;
++using System.Collections.Generic;
+ 
+ namespace Ryujinx.Graphics.OpenGL
+ {
+@@ -29,6 +30,81 @@
+ 
+         private ProgramLinkStatus _status = ProgramLinkStatus.Incomplete;
+         private int[] _shaderHandles;
++        private int _stereoLocation = -2;
++        private int _stereoLayerLocation = -2, _stereoLayerValue = int.MinValue;
++        private bool _stereoPairable;
++        private int _arrayEyeLocation = -2, _arrayEyeValue = int.MinValue;
++        private readonly HashSet<int> _arraySamplerUnits = new();
++        internal bool SamplesEyeArray(int unit) { ReadTextureBindings(); return _arraySamplerUnits.Contains(unit); }
++        internal bool HasLayeredStereo
++        {
++            get
++            {
++                if (!NativeStereo.LayeredStorage || !IsLinked) return false;
++                if (_stereoLayerLocation == -2)
++                {
++                    _stereoLayerLocation = GL.GetUniformLocation(Handle, "ryu_stereo_layer");
++                    if (_stereoLayerLocation < 0)
++                    {
++                        _stereoLayerLocation = GL.GetUniformLocation(Handle, "ryu_stereo_layer_pairable");
++                        _stereoPairable = _stereoLayerLocation >= 0;
++                    }
++                }
++                return _stereoLayerLocation >= 0;
++            }
++        }
++        internal bool HasInstancedStereo
++        {
++            get
++            {
++                if (!HasLayeredStereo || !_stereoPairable) return false;
++                if (_stereoReconstruction == -2) _stereoReconstruction = GL.GetUniformLocation(Handle, "ryu_stereo_reconstruction");
++                if (_stereoDeferred == -2) _stereoDeferred = GL.GetUniformLocation(Handle, "ryu_stereo_deferred");
++                return NativeStereo.ArraySampling || (_stereoReconstruction < 0 && _stereoDeferred < 0);
++            }
++        }
++        private int _stereoDepthViewport = -2;
++        private int _stereoReconstruction = -2;
++        private int _stereoDeferred = -2;
++        private int _stereoProjectedVarying = -2;
++        internal bool DeferredReconstruction => _stereoDeferred >= 0;
++        private readonly float[] _stereoValues = new float[12];
++        private int _stereoValueMask;
++        private long _screenBindingRevision = -1, _screenStorageRevision = -1;
++        private float _screenViewportWidth, _screenViewportHeight;
++        private Image.TextureBase _screenUnitZero;
++        private uint _screenSamplingMask;
++        private bool _stereoProjectedDepth;
++        internal bool StereoProjectedDepth => _stereoProjectedDepth;
++        internal bool ShadowReconstruction => _stereoReconstruction >= 0;
++        private HashSet<int> _samplerUnits;
++        private HashSet<int> _imageUnits;
++        internal HashSet<int> SamplerUnits { get { ReadTextureBindings(); return _samplerUnits; } }
++        internal HashSet<int> ImageUnits { get { ReadTextureBindings(); return _imageUnits; } }
++        private void ReadTextureBindings()
++        {
++            if (_samplerUnits != null) return;
++            _samplerUnits = new(); _imageUnits = new();
++            if (!IsLinked) { _samplerUnits = null; _imageUnits = null; return; }
++            GL.GetProgram(Handle, GetProgramParameterName.ActiveUniforms, out int count);
++            for (int i = 0; i < count; i++)
++            {
++                string name = GL.GetActiveUniform(Handle, i, out int size, out ActiveUniformType type);
++                string kind = type.ToString();
++                bool sampled = kind.Contains("Sampler", StringComparison.Ordinal);
++                bool image = kind.Contains("Image", StringComparison.Ordinal);
++                if (!sampled && !image) continue;
++                int location = GL.GetUniformLocation(Handle, name);
++                if (location < 0) continue;
++                GL.GetUniform(Handle, location, out int binding);
++                for (int j = 0; j < size; j++)
++                {
++                    (sampled ? _samplerUnits : _imageUnits).Add(binding + j);
++                    if (type == ActiveUniformType.Sampler2DArray) _arraySamplerUnits.Add(binding + j);
++                }
++            }
++        }
++
+ 
+         public int FragmentOutputMap { get; }
+ 
+@@ -44,6 +120,17 @@
+             for (int index = 0; index < shaders.Length; index++)
+             {
+                 ShaderSource shader = shaders[index];
++                if (NativeStereo.Enabled && shader.Stage == ShaderStage.Vertex && shader.Language == TargetLanguage.Glsl)
++                {
++                    string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(shader.Code.Replace("\r\n", "\n"))));
++                    _stereoProjectedDepth |= StereoProjectionFixes.Outputs.ContainsKey(hash);
++                }
++                string dumpPath = Environment.GetEnvironmentVariable("RYU_STEREO_SHADER_DUMP");
++                if (NativeStereo.Enabled && !string.IsNullOrEmpty(dumpPath) && shader.Language == TargetLanguage.Glsl)
++                {
++                    System.IO.Directory.CreateDirectory(dumpPath);
++                    System.IO.File.WriteAllText(System.IO.Path.Combine(dumpPath, $"{Handle}_{shader.Stage}.glsl"), shader.Code);
++                }
+ 
+                 if (shader.Stage == ShaderStage.Fragment)
+                 {
+@@ -55,7 +142,7 @@
+                 switch (shader.Language)
+                 {
+                     case TargetLanguage.Glsl:
+-                        GL.ShaderSource(shaderHandle, shader.Code);
++                        GL.ShaderSource(shaderHandle, NativeStereo.Rewrite(shader.Code, shader.Stage, shaders));
+                         GL.CompileShader(shaderHandle);
+                         break;
+                     case TargetLanguage.Spirv:
+@@ -70,6 +157,7 @@
+             }
+ 
+             GL.LinkProgram(Handle);
++            if (NativeStereo.Enabled && BackgroundContextWorker.InBackground) GL.Flush();
+ 
+             FragmentOutputMap = hasFragmentShader ? fragmentOutputMap : 0;
+         }
+@@ -94,6 +182,88 @@
+             FragmentOutputMap = hasFragmentShader ? fragmentOutputMap : 0;
+         }
+ 
++        private void ResolveStereoLocation()
++        {
++            if (_stereoLocation == -2)
++            {
++                _stereoLocation = GL.GetUniformLocation(Handle, "ryu_geometry_stereo");
++                if (_stereoLocation < 0)
++                {
++                    _stereoLocation = GL.GetUniformLocation(Handle, "ryu_geometry_stereo_projected");
++                    _stereoProjectedDepth = _stereoLocation >= 0;
++                }
++            }
++        }
++        internal bool HasGeometryStereo
++        {
++            get { if (!IsLinked) return false; ResolveStereoLocation(); return _stereoLocation >= 0; }
++        }
++        private void StereoUniform2(int location, int offset, float x, float y)
++        {
++            if ((_stereoValueMask & (1 << offset)) != 0 && _stereoValues[offset] == x && _stereoValues[offset + 1] == y) return;
++            GL.ProgramUniform2(Handle, location, x, y);
++            _stereoValues[offset] = x; _stereoValues[offset + 1] = y;
++            _stereoValueMask |= 1 << offset;
++        }
++        private uint CachedScreenMask(Image.TextureBase unitZero)
++        {
++            if (_screenBindingRevision != SameFrameStereo.TextureBindingRevision || _screenStorageRevision != SameFrameStereo.StorageCount ||
++                _screenViewportWidth != NativeStereo.ViewportWidth || _screenViewportHeight != NativeStereo.ViewportHeight || !ReferenceEquals(_screenUnitZero, unitZero))
++            {
++                _screenSamplingMask = SameFrameStereo.ScreenSpaceMask(SamplerUnits, unitZero);
++                _screenBindingRevision = SameFrameStereo.TextureBindingRevision;
++                _screenStorageRevision = SameFrameStereo.StorageCount;
++                _screenViewportWidth = NativeStereo.ViewportWidth; _screenViewportHeight = NativeStereo.ViewportHeight;
++                _screenUnitZero = unitZero;
++            }
++            return _screenSamplingMask;
++        }
++        internal void ApplyNativeStereo(bool worldDraw, Image.TextureBase unitZero = null)
++        {
++            if (!NativeStereo.Enabled) return;
++            ResolveStereoLocation();
++            if (NativeStereo.ArraySampling)
++            {
++                if (_arrayEyeLocation == -2) _arrayEyeLocation = GL.GetUniformLocation(Handle, "ryu_stereo_sampling_eye");
++                int arrayEye = NativeStereo.InstancedDraw ? -2 : NativeStereo.CurrentEye;
++                if (_arrayEyeLocation >= 0 && _arrayEyeValue != arrayEye)
++                {
++                    GL.ProgramUniform1(Handle, _arrayEyeLocation, arrayEye);
++                    _arrayEyeValue = arrayEye;
++                }
++            }
++            if (HasLayeredStereo)
++            {
++                int layer = NativeStereo.LayeredTarget ? (NativeStereo.InstancedDraw ? -2 : NativeStereo.CurrentEye) : -1;
++                if (layer != _stereoLayerValue) { GL.ProgramUniform1(Handle, _stereoLayerLocation, layer); _stereoLayerValue = layer; }
++            }
++            if (_stereoProjectedVarying == -2) _stereoProjectedVarying = GL.GetUniformLocation(Handle, "ryu_stereo_projected_varying");
++            if (_stereoProjectedVarying >= 0)
++            {
++                bool active = NativeStereo.GeometryPass && (worldDraw || _stereoProjectedDepth) && CachedScreenMask(unitZero) != 0;
++                StereoUniform2(_stereoProjectedVarying, 2, active ? NativeStereo.EyeShift : 0f, NativeStereo.Convergence);
++            }
++            if (_stereoReconstruction == -2) _stereoReconstruction = GL.GetUniformLocation(Handle, "ryu_stereo_reconstruction");
++            if (_stereoReconstruction >= 0) StereoUniform2(_stereoReconstruction, 4, NativeStereo.EyeShift, NativeStereo.Convergence);
++            if (_stereoDeferred == -2) _stereoDeferred = GL.GetUniformLocation(Handle, "ryu_stereo_deferred");
++            if (_stereoDeferred >= 0) StereoUniform2(_stereoDeferred, 6, NativeStereo.EyeShift, NativeStereo.Convergence);
++            if (_stereoDepthViewport == -2) _stereoDepthViewport = GL.GetUniformLocation(Handle, "ryu_stereo_depth_viewport");
++            if (_stereoDepthViewport >= 0)
++            {
++                float iw = 1f / MathF.Max(1, NativeStereo.ViewportWidth);
++                float ih = 1f / MathF.Max(1, NativeStereo.ViewportHeight);
++                float vx = -NativeStereo.ViewportX * iw, vy = -NativeStereo.ViewportY * ih;
++                if ((_stereoValueMask & 256) == 0 || _stereoValues[8] != iw || _stereoValues[9] != ih || _stereoValues[10] != vx || _stereoValues[11] != vy)
++                {
++                    GL.ProgramUniform4(Handle, _stereoDepthViewport, iw, ih, vx, vy);
++                    _stereoValues[8] = iw; _stereoValues[9] = ih; _stereoValues[10] = vx; _stereoValues[11] = vy;
++                    _stereoValueMask |= 256;
++                }
++            }
++            if (_stereoLocation >= 0)
++                StereoUniform2(_stereoLocation, 0, NativeStereo.GeometryPass && (worldDraw || _stereoProjectedDepth) ? NativeStereo.EyeShift : 0f, NativeStereo.Convergence);
++        }
++
+         public void Bind()
+         {
+             GL.UseProgram(Handle);
+@@ -130,6 +300,7 @@
+             else
+             {
+                 _status = ProgramLinkStatus.Success;
++                if (NativeStereo.Enabled) GL.Flush();
+             }
+ 
+             return _status;
+@@ -137,6 +308,7 @@
+ 
+         public byte[] GetBinary()
+         {
++            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+             GL.GetProgram(Handle, (GetProgramParameterName)All.ProgramBinaryLength, out int size);
+ 
+             byte[] data = new byte[size + 4];
+@@ -145,6 +317,8 @@
+ 
+             BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(size, 4), (int)binFormat);
+ 
++            double ms = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
++            if (NativeStereo.Enabled && ms > 8) Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo shader binary export: {ms:F1} ms, background={BackgroundContextWorker.InBackground}");
+             return data;
+         }
+ 
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/SameFrameStereo.cs
+@@ -0,0 +1,267 @@
++using OpenTK.Graphics.OpenGL;
++using Ryujinx.Graphics.OpenGL.Image;
++using System;
++using System.Collections.Generic;
++using System.IO;
++using Ryujinx.Graphics.GAL;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    // Both draws consume the same guest command and input buffers before the queue advances.
++    internal static class SameFrameStereo
++    {
++        [ThreadStatic] internal static bool Executing;
++        [ThreadStatic] private static Dictionary<int, TextureBase> _textures;
++        [ThreadStatic] private static Dictionary<int, TextureBase> _images;
++        [ThreadStatic] private static List<(int Unit, int Handle)> _sampledBindings;
++        [ThreadStatic] private static List<(int Unit, int Handle, SizedInternalFormat Format)> _imageBindings;
++        private static readonly HashSet<int> _tracedPrograms = new();
++        private static readonly HashSet<(int Handle, int Eye)> _tracedTextures = new();
++        internal static void BeginTrace() { _tracedPrograms.Clear(); _tracedTextures.Clear(); }
++        private static void Trace(Program program)
++        {
++            if (!NativeStereo.TraceFrame || program == null || !_tracedPrograms.Add(program.Handle)) return;
++            string path = Environment.GetEnvironmentVariable("RYU_STEREO_TRACE");
++            Directory.CreateDirectory(path);
++            using var log = File.AppendText(Path.Combine(path, "bindings.txt"));
++            log.WriteLine($"program={program.Handle} projectedDepth={program.StereoProjectedDepth} geometryPass={NativeStereo.GeometryPass} shadowCorrection={program.ShadowReconstruction} deferredCorrection={program.DeferredReconstruction}");
++            GL.GetProgram(program.Handle, GetProgramParameterName.ActiveUniformBlocks, out int blockCount);
++            for (int block = 0; block < blockCount; block++)
++            {
++                GL.GetActiveUniformBlock(program.Handle, block, ActiveUniformBlockParameter.UniformBlockBinding, out int binding);
++                GL.GetInteger(GetIndexedPName.UniformBufferBinding, binding, out int buffer);
++                GL.GetInteger64(GetIndexedPName.UniformBufferStart, binding, out long offset);
++                GL.GetInteger64(GetIndexedPName.UniformBufferSize, binding, out long length);
++                int bytes = (int)System.Math.Min(length, 4096);
++                if (buffer == 0 || bytes < 16) continue;
++                byte[] data = new byte[bytes];
++                GL.GetNamedBufferSubData(buffer, (nint)offset, bytes, data);
++                File.WriteAllBytes(Path.Combine(path, $"p{program.Handle}_ubo{binding}.bin"), data);
++            }
++            if (program.SamplerUnits == null || _textures == null) return;
++            foreach (int unit in program.SamplerUnits)
++            {
++                if (!_textures.TryGetValue(unit, out var texture) || texture is not TextureView view) continue;
++                log.WriteLine($"  unit={unit} handle={view.Handle} size={view.Width}x{view.Height} format={view.Format} target={view.Target} stereo={view.HasStereoStorage}");
++                bool scalar = view.Format.IsDepthOrStencil() || view.Format == Format.R16Float || view.Format == Format.R32Float;
++                bool scene = view.Width > view.Height * 1.5f && view.Width < view.Height * 2.1f;
++                if (view.Target != Target.Texture2D || view.Width * (long)view.Height > 8000000 || view.Width < 256 || !(scalar || (scene && view.HasStereoStorage))) continue;
++                GL.GetInteger(GetPName.PixelPackBufferBinding, out int pack);
++                GL.BindBuffer(BufferTarget.PixelPackBuffer, 0);
++                try
++                {
++                    for (int eye = 0; eye < 2; eye++)
++                    {
++                        NativeStereo.SetEye(eye);
++                        int handle = view.Handle;
++                        if (!_tracedTextures.Add((handle, eye))) continue;
++                        string fileName = $"p{program.Handle}_u{unit}_h{handle}_eye{eye}_{view.Width}x{view.Height}_{view.Format}";
++                        if (scalar)
++                        {
++                            float[] values = new float[view.Width * view.Height];
++                            GL.GetTextureImage(handle, 0, view.Format.IsDepthOrStencil() ? PixelFormat.DepthComponent : PixelFormat.Red, PixelType.Float, values.Length * sizeof(float), values);
++                            byte[] bytes = new byte[values.Length * sizeof(float)];
++                            System.Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
++                            File.WriteAllBytes(Path.Combine(path, fileName + ".f32"), bytes);
++                        }
++                        else
++                        {
++                            byte[] bytes = new byte[view.Width * view.Height * 4];
++                            GL.GetTextureImage(handle, 0, PixelFormat.Rgba, PixelType.UnsignedByte, bytes.Length, bytes);
++                            File.WriteAllBytes(Path.Combine(path, fileName + ".rgba8"), bytes);
++                        }
++                    }
++                }
++                finally { NativeStereo.SetEye(0); GL.BindBuffer(BufferTarget.PixelPackBuffer, pack); }
++            }
++        }
++        internal static long StorageCount;
++        internal static long TextureBindingRevision;
++        internal static long DrawPairs;
++        internal static long LayeredDrawPairs;
++        internal static bool IsCharacterShadow(Program program, TextureBase unitZero)
++        {
++            bool character = false, camera = false;
++            if (program?.SamplerUnits == null) return false;
++            foreach (int unit in program.SamplerUnits)
++            {
++                TextureBase texture = null;
++                if (unit == 0) texture = unitZero;
++                else _textures?.TryGetValue(unit, out texture);
++                if (texture is not TextureView view || view.Target != Target.Texture2D) continue;
++                character |= view.Width == 384 && view.Height == 384 && view.Format == Format.R16Float;
++                camera |= view.HasStereoStorage && view.Width > view.Height * 1.5f && view.Width < view.Height * 2.1f;
++            }
++            return character && camera;
++        }
++        internal static uint ScreenSpaceMask(HashSet<int> units, TextureBase unitZero)
++        {
++            uint mask = 0;
++            if (units == null) return mask;
++            foreach (int unit in units)
++            {
++                TextureBase texture = null;
++                if (unit == 0) texture = unitZero;
++                else _textures?.TryGetValue(unit, out texture);
++                if (unit >= 32 || texture is not TextureView view || !view.HasStereoStorage || view.Target != Target.Texture2D) continue;
++                float aspect = (float)view.Width / view.Height;
++                float viewportAspect = NativeStereo.ViewportWidth / NativeStereo.ViewportHeight;
++                if (aspect > 1.5f && aspect < 2.1f && System.MathF.Abs(aspect - viewportAspect) < 0.02f && view.Width >= 256)
++                    mask |= 1u << unit;
++            }
++            return mask;
++        }
++        internal static bool NeedsStereoCompute(Program program)
++        {
++            if (program?.SamplerUnits != null && _textures != null)
++                foreach (int unit in program.SamplerUnits)
++                    if (_textures.TryGetValue(unit, out var texture) && texture is TextureView view && view.HasStereoStorage) return true;
++            if (program?.ImageUnits != null && _images != null)
++                foreach (int unit in program.ImageUnits)
++                    if (_images.TryGetValue(unit, out var texture) && texture is TextureView view && view.HasStereoStorage) return true;
++            return false;
++        }
++        internal static void TrackTexture(int unit, TextureBase texture)
++        {
++            if (!NativeStereo.Enabled || BackgroundContextWorker.InBackground) return;
++            _textures ??= new();
++            if (texture == null)
++            {
++                if (_textures.Remove(unit)) TextureBindingRevision++;
++            }
++            else if (!_textures.TryGetValue(unit, out var previous) || !ReferenceEquals(previous, texture))
++            {
++                _textures[unit] = texture;
++                TextureBindingRevision++;
++            }
++        }
++        internal static void TrackImage(int unit, TextureBase texture)
++        {
++            if (!NativeStereo.Enabled || BackgroundContextWorker.InBackground) return;
++            _images ??= new();
++            if (texture == null) _images.Remove(unit);
++            else
++            {
++                _images[unit] = texture;
++            }
++        }
++        private static void PrepareImages(Program program)
++        {
++            if (program?.ImageUnits == null || _images == null) return;
++            foreach (int unit in program.ImageUnits)
++                if (_images.TryGetValue(unit, out var texture)) (texture as TextureView)?.MakeStereo();
++        }
++        private static void BindResources(Program program)
++        {
++            var sampled = _sampledBindings ??= new(32);
++            var images = _imageBindings ??= new(16);
++            sampled.Clear();
++            images.Clear();
++            if (program?.SamplerUnits != null && _textures != null)
++                foreach (int unit in program.SamplerUnits)
++                    if (_textures.TryGetValue(unit, out var texture) && texture is TextureView view && view.HasStereoStorage)
++                        sampled.Add((unit, texture.Handle));
++            if (program?.ImageUnits != null && _images != null)
++                foreach (int unit in program.ImageUnits)
++                    if (_images.TryGetValue(unit, out var texture) && texture is TextureView view && view.HasStereoStorage)
++                        images.Add((unit, texture.Handle, FormatTable.GetImageFormat(texture.Format)));
++            // Allocation/view creation uses unit zero internally, so restore it even for a mono asset.
++            if (_textures != null && _textures.TryGetValue(0, out var unitZero)) sampled.Add((0, unitZero.Handle));
++            foreach (var entry in sampled)
++            {
++                GL.BindTextureUnit(entry.Unit, entry.Handle);
++                if (_textures != null && _textures.TryGetValue(entry.Unit, out var source)) StereoArrayBinding.Bind(entry.Unit, source);
++            }
++            foreach (var entry in images)
++                if (entry.Format != 0)
++                    GL.BindImageTexture(entry.Unit, entry.Handle, 0, true, 0, TextureAccess.ReadWrite, entry.Format);
++            GL.ActiveTexture(TextureUnit.Texture0);
++        }
++        internal static void Execute(Action draw, Action bindFramebuffer = null, Program program = null, Framebuffer framebuffer = null, bool retainDrawTarget = false)
++        {
++            if (!NativeStereo.Enabled || Executing) { draw(); return; }
++            Executing = true;
++            try
++            {
++                bool captureOutput = NativeStereo.TraceFrame && program != null && !_tracedPrograms.Contains(program.Handle);
++                Trace(program);
++                PrepareImages(program);
++                bool alternate = retainDrawTarget && NativeStereo.AlternatingEyes && !NativeStereo.TraceFrame;
++                int firstEye = alternate && framebuffer?.RightEyeIsBound == true ? 1 : 0;
++                for (int step = 0; step < 2; step++)
++                {
++                    int eye = firstEye ^ step;
++                    NativeStereo.SetEye(eye);
++                    bindFramebuffer?.Invoke();
++                    if (eye == 0 && step == 0 && !NativeStereo.ArraySampling)
++                    {
++                        // Guest bindings and the previous pair's restore already select left-eye resources.
++                        // Texture allocation may have used unit zero internally.
++                        if (_textures != null && _textures.TryGetValue(0, out var zero)) GL.BindTextureUnit(0, zero.Handle);
++                        GL.ActiveTexture(TextureUnit.Texture0);
++                    }
++                    else BindResources(program);
++                    draw();
++                    if (captureOutput) framebuffer?.TraceOutput(program.Handle, DrawPairs);
++                }
++                if (NativeStereo.LayeredTarget) LayeredDrawPairs++;
++                DrawPairs++;
++            }
++            finally
++            {
++                NativeStereo.SetEye(0);
++                if (!retainDrawTarget || !NativeStereo.AlternatingEyes || NativeStereo.TraceFrame)
++                    bindFramebuffer?.Invoke();
++                BindResources(program);
++                Executing = false;
++            }
++        }
++        private static bool HasUnbatchableEyeTexture(Program program)
++        {
++            if (!NativeStereo.ArraySampling) return NeedsStereoCompute(program);
++            if (_textures == null) return false;
++            foreach (int unit in program.SamplerUnits)
++                if (_textures.TryGetValue(unit, out var texture) && texture is TextureView view && view.HasStereoStorage &&
++                    (!view.CanSampleEyeLayers || !program.SamplesEyeArray(unit))) return true;
++            return false;
++        }
++        internal static long InstancedDrawPairs;
++        internal static bool TryExecuteInstanced(Action draw, Action bindFramebuffer, Program program)
++        {
++            if (!NativeStereo.InstancedStorage || !NativeStereo.InstancedRendering || !NativeStereo.LayeredRendering ||
++                NativeStereo.TraceFrame || Executing || program?.HasInstancedStereo != true ||
++                program.ImageUnits.Count != 0 || HasUnbatchableEyeTexture(program)) return false;
++
++            NativeStereo.SetEye(0);
++            bindFramebuffer();
++            if (!NativeStereo.LayeredTarget) return false;
++            Executing = true;
++            NativeStereo.InstancedDraw = true;
++            try
++            {
++                BindResources(program);
++                draw();
++                DrawPairs++;
++                LayeredDrawPairs++;
++                InstancedDrawPairs++;
++                return true;
++            }
++            finally
++            {
++                NativeStereo.InstancedDraw = false;
++                NativeStereo.SetEye(0);
++                BindResources(program);
++                Executing = false;
++            }
++        }
++        internal static bool CopyBoth(TextureView source, TextureView destination, Action copy)
++        {
++            if (!NativeStereo.Enabled || Executing || BackgroundContextWorker.InBackground ||
++                !(source?.HasStereoStorage == true || destination?.HasStereoStorage == true)) return false;
++            destination?.MakeStereo();
++            Execute(copy);
++            return true;
++        }
++    }
++}
++
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoArrayBinding.cs
+@@ -0,0 +1,29 @@
++using OpenTK.Graphics.OpenGL;
++using Ryujinx.Graphics.OpenGL.Image;
++using Ryujinx.Graphics.GAL;
++using System;
++using System.Collections.Generic;
++using System.Threading;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    internal static class StereoArrayBinding
++    {
++        [ThreadStatic] private static Dictionary<int, int> _bound;
++        [ThreadStatic] private static long _seenDeletion;
++        private static long _deletions;
++        internal static void Invalidate(int unit) => _bound?.Remove(unit);
++        internal static void Deleted() => Interlocked.Increment(ref _deletions);
++        internal static void Bind(int unit, TextureBase texture)
++        {
++            if (!NativeStereo.ArraySampling || texture is not TextureView view || view.Target != Target.Texture2D) return;
++            int handle = view.ArraySamplingHandle;
++            _bound ??= new();
++            long deletion = Volatile.Read(ref _deletions);
++            if (_seenDeletion != deletion) { _bound.Clear(); _seenDeletion = deletion; }
++            if (_bound.TryGetValue(unit, out int old) && old == handle) return;
++            GL.BindTextureUnit(unit, handle);
++            _bound[unit] = handle;
++        }
++    }
++}
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoArraySampling.cs
+@@ -0,0 +1,98 @@
++using Ryujinx.Graphics.Shader;
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Text.RegularExpressions;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    // Keep the original texture operations and constant offsets; only add an array-layer coordinate.
++    internal static class StereoArraySampling
++    {
++        private static readonly Regex Sampler = new(@"\buniform\s+sampler2D\s+((?:vp|fp|gp|tcp|tep|cp)_t_\w+)");
++        private static readonly Regex Call = new(@"\b(\w+)\s*\(");
++        private static readonly HashSet<string> Supported = new()
++        {
++            "texture", "textureLod", "textureOffset", "textureLodOffset", "textureGrad", "textureGradOffset",
++            "textureGather", "textureGatherOffset", "textureGatherOffsets", "texelFetch", "texelFetchOffset",
++            "textureSize", "textureQueryLod", "textureQueryLevels"
++        };
++
++        private static List<string> Arguments(string code, int open, out int end)
++        {
++            var args = new List<string>();
++            int depth = 0, bracket = 0, start = open + 1;
++            for (int i = start; i < code.Length; i++)
++            {
++                char c = code[i];
++                if (c == '(') depth++;
++                else if (c == ')')
++                {
++                    if (depth == 0) { args.Add(code.Substring(start, i - start).Trim()); end = i + 1; return args; }
++                    depth--;
++                }
++                else if (c == '[') bracket++;
++                else if (c == ']') bracket--;
++                else if (c == ',' && depth == 0 && bracket == 0)
++                {
++                    args.Add(code.Substring(start, i - start).Trim()); start = i + 1;
++                }
++            }
++            end = open;
++            return args;
++        }
++
++        internal static string Rewrite(string code, ShaderStage stage)
++        {
++            if (!NativeStereo.ArraySampling || !NativeStereo.Enabled) return code;
++            var names = Sampler.Matches(code).Select(m => m.Groups[1].Value).ToHashSet();
++            Match[] calls = Call.Matches(code).ToArray();
++            foreach (Match call in calls)
++            {
++                var args = Arguments(code, call.Index + call.Length - 1, out _);
++                string name = args.Count == 0 ? "" : Regex.Match(args[0], @"^\w+").Value;
++                if (names.Contains(name) && !Supported.Contains(call.Groups[1].Value)) names.Remove(name);
++            }
++            bool reconstruction = stage == ShaderStage.Fragment &&
++                (code.Contains("ryu_stereo_reconstruction.x", StringComparison.Ordinal) || code.Contains("ryu_stereo_deferred.x", StringComparison.Ordinal));
++            if (names.Count == 0 && !reconstruction) return code;
++
++            // Work right-to-left, reparsing argument ends after nested call edits.
++            for (int i = calls.Length - 1; i >= 0; i--)
++            {
++                Match call = calls[i];
++                string function = call.Groups[1].Value;
++                var args = Arguments(code, call.Index + call.Length - 1, out int end);
++                string name = args.Count == 0 ? "" : Regex.Match(args[0], @"^\w+").Value;
++                if (!names.Contains(name) || !Supported.Contains(function)) continue;
++                if (function == "textureQueryLod" || function == "textureQueryLevels") continue;
++                if (function != "textureSize")
++                {
++                    if (args.Count < 2) continue;
++                    bool integer = function.StartsWith("texelFetch", StringComparison.Ordinal);
++                    args[1] = $"{(integer ? "ivec3" : "vec3")}({args[1]}, ryu_array_eye())";
++                }
++                string replacement = function + "(" + string.Join(", ", args) + ")";
++                if (function == "textureSize") replacement = "(" + replacement + ".xy)";
++                code = code.Substring(0, call.Index) + replacement + code.Substring(end);
++            }
++            code = Sampler.Replace(code, m => names.Contains(m.Groups[1].Value) ? m.Value.Replace("sampler2D", "sampler2DArray") : m.Value);
++
++            string pairEye = stage == ShaderStage.Vertex ? "(gl_InstanceID & 1)" : stage == ShaderStage.Fragment ? "gl_Layer" : "0";
++            string helper = "uniform int ryu_stereo_sampling_eye;\nint ryu_array_eye() { return ryu_stereo_sampling_eye == -2 ? " + pairEye + " : max(ryu_stereo_sampling_eye, 0); }\n";
++            if (reconstruction)
++            {
++                helper += "float ryu_array_eye_sign() { return ryu_stereo_sampling_eye == -2 && gl_Layer != 0 ? -1.0 : 1.0; }\n";
++                code = code.Replace("ryu_stereo_reconstruction.x", "(ryu_stereo_reconstruction.x * ryu_array_eye_sign())")
++                    .Replace("ryu_stereo_deferred.x", "(ryu_stereo_deferred.x * ryu_array_eye_sign())");
++            }
++            int declaration = 0;
++            foreach (string line in code.Split('\n'))
++            {
++                if (!string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("#", StringComparison.Ordinal)) break;
++                declaration += line.Length + 1;
++            }
++            return code.Insert(Math.Min(declaration, code.Length), helper);
++        }
++    }
++}
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoDeferredReconstruction.cs
+@@ -0,0 +1,66 @@
++using System;
++using System.Collections.Generic;
++using System.Text.RegularExpressions;
++using Ryujinx.Common.Logging;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    internal static class StereoDeferredReconstruction
++    {
++        internal static string Rewrite(string fragment, string vertex)
++        {
++            if (string.IsNullOrEmpty(vertex)) return fragment;
++            var defs = new Dictionary<string, string>();
++            foreach (Match m in Regex.Matches(vertex, @"\b(temp_\d+)\s*=\s*([^;]+);")) defs[m.Groups[1].Value] = m.Groups[2].Value;
++            var attributes = new Dictionary<string, (string Scale, string DepthRow)>();
++            foreach (var layout in new[] { (Buffer: "3", RayRow: "11", DepthRow: "10"), (Buffer: "4", RayRow: "23", DepthRow: "22") })
++            {
++                string row = $"vp_c{layout.Buffer}.data[{layout.RayRow}]";
++                foreach (Match m in Regex.Matches(vertex, @"\b(out_attr\d+\.x)\s*=\s*([^;]+);"))
++                {
++                    var pending = new Queue<(string Expr, int Depth)>();
++                    var visited = new HashSet<string>();
++                    pending.Enqueue((m.Groups[2].Value, 0));
++                    bool scale = false, offset = false;
++                    while (pending.Count > 0 && visited.Count < 80)
++                    {
++                        var item = pending.Dequeue();
++                        scale |= item.Expr.Contains(row + ".x", StringComparison.Ordinal);
++                        offset |= item.Expr.Contains(row + ".z", StringComparison.Ordinal);
++                        if (item.Depth >= 8) continue;
++                        foreach (Match t in Regex.Matches(item.Expr, @"\btemp_\d+\b"))
++                            if (visited.Add(t.Value) && defs.TryGetValue(t.Value, out string next)) pending.Enqueue((next, item.Depth + 1));
++                    }
++                    if (scale && offset && fragment.Contains($"}} fp_c{layout.Buffer};", StringComparison.Ordinal))
++                        attributes[m.Groups[1].Value.Replace("out_attr", "in_attr")] = ($"fp_c{layout.Buffer}.data[{layout.RayRow}].x", $"fp_c{layout.Buffer}.data[{layout.DepthRow}]");
++                }
++            }
++            if (attributes.Count == 0) return fragment;
++            var rays = new Dictionary<string, (string Scale, string DepthRow, int Sign)>();
++            foreach (Match m in Regex.Matches(fragment, @"\b(temp_\d+) = ([^;]+);"))
++            {
++                string expression = m.Groups[2].Value;
++                if (attributes.TryGetValue(expression, out var attr)) rays[m.Groups[1].Value] = (attr.Scale, attr.DepthRow, 1);
++                Match neg = Regex.Match(expression, @"^0\.0 - (temp_\d+)$");
++                if (neg.Success && rays.TryGetValue(neg.Groups[1].Value, out var ray)) rays[m.Groups[1].Value] = (ray.Scale, ray.DepthRow, -ray.Sign);
++            }
++            var depthRows = new Dictionary<string, string>();
++            foreach (Match m in Regex.Matches(fragment, @"\b(temp_\d+) = fma\(temp_\d+, (fp_c\d+\.data\[\d+\])\.[yz], \2\.x\);"))
++                depthRows[m.Groups[1].Value] = m.Groups[2].Value;
++            int count = 0;
++            fragment = Regex.Replace(fragment, @"\b(temp_\d+) = (temp_\d+) \* (temp_\d+);", m =>
++            {
++                string a = m.Groups[2].Value, b = m.Groups[3].Value;
++                if (!rays.ContainsKey(a)) (a, b) = (b, a);
++                if (!rays.TryGetValue(a, out var ray) || !depthRows.TryGetValue(b, out string depthRow) || depthRow != ray.DepthRow) return m.Value;
++                count++;
++                return m.Value + $" {m.Groups[1].Value} += {ray.Sign}.0 * ryu_stereo_deferred.x * ({b} - ryu_stereo_deferred.y) * {ray.Scale};";
++            });
++            if (count == 0) return fragment;
++            int main = fragment.IndexOf("void main()", StringComparison.Ordinal);
++            if (main < 0) return fragment;
++            Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo: deferred lighting eye reconstruction corrected in {count} expressions");
++            return fragment.Insert(main, "uniform vec2 ryu_stereo_deferred;\n");
++        }
++    }
++}
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoProjectedVaryings.cs
+@@ -0,0 +1,128 @@
++using System;
++using System.Collections.Generic;
++using System.Globalization;
++using System.Linq;
++using System.Text.RegularExpressions;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    internal static class StereoProjectedVaryings
++    {
++        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> Cache = new(StringComparer.Ordinal);
++        // Differentiate clip-derived outputs with respect to clip X. Ordinary
++        // material UVs and world positions do not depend on the final clip-X SSA node.
++        internal static string Correction(string source) => Cache.GetOrAdd(source, Analyze);
++        private static string Analyze(string source)
++        {
++            var xs = Regex.Matches(source, @"gl_Position\.x = (temp_\d+);");
++            var ws = Regex.Matches(source, @"gl_Position\.w = (temp_\d+);");
++            if (xs.Count != 1 || ws.Count != 1) return "";
++            string clipX = xs[0].Groups[1].Value, clipW = ws[0].Groups[1].Value;
++            var defs = new Dictionary<string, string>();
++            var repeated = new HashSet<string>();
++            foreach (Match m in Regex.Matches(source, @"\b(temp_\d+) = ([^;]+);"))
++            {
++                string name = m.Groups[1].Value;
++                if (!defs.TryAdd(name, m.Groups[2].Value)) repeated.Add(name);
++            }
++            var cache = new Dictionary<string, string>();
++            var dependencies = new Dictionary<string, bool>();
++            bool Depends(string expression, int depth = 0)
++            {
++                if (expression == clipX) return true;
++                if (expression == clipW) return false;
++                if (depth > 32) return true;
++                if (dependencies.TryGetValue(expression, out bool known)) return known;
++                foreach (Match t in Regex.Matches(expression, @"\btemp_\d+\b"))
++                {
++                    if (t.Value == clipX) return true;
++                    if (t.Value != clipW && defs.TryGetValue(t.Value, out string next) && Depends(next, depth + 1)) return true;
++                }
++                dependencies[expression] = false;
++                return false;
++            }
++            string Expand(string expr, int depth)
++            {
++                if (depth > 24) return null;
++                if (expr == clipW) return "gl_Position.w";
++                if (!Regex.IsMatch(expr, @"\btemp_\d+\b")) return expr;
++                bool failed = false;
++                string result = Regex.Replace(expr, @"\btemp_\d+\b", m =>
++                {
++                    if (m.Value == clipW) return "gl_Position.w";
++                    if (repeated.Contains(m.Value) || !defs.TryGetValue(m.Value, out string next)) { failed = true; return ""; }
++                    string value = Expand(next, depth + 1);
++                    if (value == null) { failed = true; return ""; }
++                    return "(" + value + ")";
++                });
++                return failed || result.Length > 400 ? null : result;
++            }
++            static bool Zero(string x) => x == "0.0";
++            static string Sum(string a, string b)
++            {
++                if (a == null || b == null) return null;
++                if (Zero(a)) return b;
++                if (Zero(b)) return a;
++                return $"({a} + {b})";
++            }
++            string Product(string derivative, string value, int depth)
++            {
++                if (derivative == null) return null;
++                if (Zero(derivative)) return "0.0";
++                if (Depends(value)) return null;
++                string expanded = Expand(value, depth + 1);
++                if (expanded == null) return null;
++                if (expanded == "0.0" || expanded == "0") return "0.0";
++                return derivative == "1.0" ? expanded : $"({derivative} * ({expanded}))";
++            }
++            string D(string expr, int depth = 0)
++            {
++                if (depth > 32) return null;
++                if (expr == clipX) return "1.0";
++                if (expr == clipW) return "0.0";
++                if (!Depends(expr)) return "0.0";
++                if (cache.TryGetValue(expr, out string known)) return known;
++                if (Regex.IsMatch(expr, @"^temp_\d+$"))
++                {
++                    if (repeated.Contains(expr) || !defs.TryGetValue(expr, out string next)) return null;
++                    string answer = D(next, depth + 1);
++                    cache[expr] = answer;
++                    return answer;
++                }
++                if (!Regex.IsMatch(expr, @"\btemp_\d+\b")) return "0.0";
++                Match fma = Regex.Match(expr, @"^fma\(([^,()]+), ([^,()]+), ([^,()]+)\)$");
++                if (fma.Success)
++                {
++                    string a = fma.Groups[1].Value, b = fma.Groups[2].Value, c = fma.Groups[3].Value;
++                    return Sum(Sum(Product(D(a, depth + 1), b, depth), Product(D(b, depth + 1), a, depth)), D(c, depth + 1));
++                }
++                Match op = Regex.Match(expr, @"^([^ ()]+) ([+*/-]) ([^ ()]+)$");
++                if (!op.Success) return null;
++                string lhs = op.Groups[1].Value, rhs = op.Groups[3].Value;
++                string da = D(lhs, depth + 1), db = D(rhs, depth + 1);
++                switch (op.Groups[2].Value)
++                {
++                    case "+": return Sum(da, db);
++                    case "-": return Sum(da, Product(db, "-1.0", depth));
++                    case "*": return Sum(Product(da, rhs, depth), Product(db, lhs, depth));
++                    case "/":
++                        if (da == null || db == null || !Zero(db)) return null;
++                        if (Zero(da)) return "0.0";
++                        string denominator = Expand(rhs, depth + 1);
++                        return denominator == null ? null : $"({da} / ({denominator}))";
++                    default: return null;
++                }
++            }
++            var outputs = new Dictionary<string, string>();
++            foreach (Match m in Regex.Matches(source, @"\b(out_attr\d+\.[xyzw]) = ([^;]+);"))
++            {
++                string coefficient = D(m.Groups[2].Value);
++                if (coefficient != null && !Zero(coefficient) && coefficient.Length <= 400)
++                    outputs[m.Groups[1].Value] = coefficient;
++            }
++            if (outputs.Count == 0) return "";
++            return "if (abs(gl_Position.w - 1.0) > 0.0001) { float ryu_varying_dx = ryu_stereo_projected_varying.x * (gl_Position.w - ryu_stereo_projected_varying.y);\n" +
++                string.Join("\n", outputs.Select(o => $"{o.Key} += ryu_varying_dx * ({o.Value});")) + "\n}\n";
++        }
++    }
++}
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoProjectionFixes.cs
+@@ -0,0 +1,7 @@
++using System.Collections.Generic;
++namespace Ryujinx.Graphics.OpenGL { internal static class StereoProjectionFixes { internal static readonly Dictionary<string,string[]> Outputs = new() {
++["98F5FBC9DD8DA063ACC29905D79BE2978C9F9D81537539D92B61915B3FB64377"] = new[] {"out_attr2"},
++["31E41F783CD1B14B9F1098A8A00DA02B9A27567447E85650F93C06A71CCB66CE"] = new[] {"out_attr2"},
++["80886F7EDDDE27C544851522A8214AD5510D220A458F24AA5F4B0D806BB6BFBC"] = new[] {"out_attr3"},
++["640BE734562722DC11B21A649A0EC948DD0ACC4FE6DF2E2D6759423CFBDAB247"] = new[] {"out_attr4"},
++}; } }
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoScreenSampling.cs
+@@ -0,0 +1,36 @@
++using System.Collections.Generic;
++using System.Text.RegularExpressions;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    internal static class StereoScreenSampling
++    {
++        // Resource bindings, rather than shader names, identify per-eye scene buffers.
++        // Perspective fragments must sample these buffers at their rasterized eye position.
++        internal static string Rewrite(string code)
++        {
++            var samplers = new Dictionary<string, int>();
++            foreach (Match m in Regex.Matches(code, @"layout\s*\(binding\s*=\s*(\d+)\)\s*uniform\s+sampler2D\s+(\w+)\s*;"))
++            {
++                int unit = int.Parse(m.Groups[1].Value);
++                if (unit < 32) samplers[m.Groups[2].Value] = unit;
++            }
++            int count = 0;
++            code = Regex.Replace(code, @"\btexture\((\w+),\s*vec2\(([^()]*)\)\)", m =>
++            {
++                if (!samplers.TryGetValue(m.Groups[1].Value, out int unit)) return m.Value;
++                count++;
++                return $"texture({m.Groups[1].Value}, ryu_stereo_screen_uv(vec2({m.Groups[2].Value}), {unit}))";
++            });
++            if (count == 0) return code;
++            int main = code.IndexOf("void main()", System.StringComparison.Ordinal);
++            if (main < 0) return code;
++            return code.Insert(main,
++                "uniform uint ryu_stereo_screen_mask;\nuniform vec4 ryu_stereo_screen_viewport;\n" +
++                "vec2 ryu_stereo_screen_uv(vec2 uv, int unit) {\n" +
++                " if ((ryu_stereo_screen_mask & (1u << uint(unit))) != 0u && abs(gl_FragCoord.w - 1.0) > 0.00001)\n" +
++                "  return gl_FragCoord.xy * ryu_stereo_screen_viewport.xy + ryu_stereo_screen_viewport.zw;\n" +
++                " return uv;\n}\n");
++        }
++    }
++}
+--- /dev/null
++++ b/src/Ryujinx.Graphics.OpenGL/StereoShadowReconstruction.cs
+@@ -0,0 +1,59 @@
++using System;
++using System.Collections.Generic;
++using System.Text.RegularExpressions;
++using Ryujinx.Common.Logging;
++
++namespace Ryujinx.Graphics.OpenGL
++{
++    internal static class StereoShadowReconstruction
++    {
++        internal static string Rewrite(string fragment, string vertex)
++        {
++            if (string.IsNullOrEmpty(vertex) || !fragment.Contains("} fp_c3;", StringComparison.Ordinal)) return fragment;
++            var definitions = new Dictionary<string, string>();
++            foreach (Match m in Regex.Matches(vertex, @"\b(temp_\d+)\s*=\s*([^;]+);")) definitions[m.Groups[1].Value] = m.Groups[2].Value;
++            bool CameraRay(string expression)
++            {
++                bool scale = false, offset = false;
++                var pending = new Queue<(string Expression, int Depth)>();
++                var visited = new HashSet<string>();
++                pending.Enqueue((expression, 0));
++                while (pending.Count > 0 && visited.Count < 200)
++                {
++                    var item = pending.Dequeue();
++                    scale |= item.Expression.Contains("vp_c3.data[0].z", StringComparison.Ordinal);
++                    offset |= item.Expression.Contains("vp_c3.data[34].z", StringComparison.Ordinal);
++                    if (scale && offset) return true;
++                    if (item.Depth >= 12) continue;
++                    foreach (Match t in Regex.Matches(item.Expression, @"\btemp_\d+\b"))
++                        if (visited.Add(t.Value) && definitions.TryGetValue(t.Value, out string next)) pending.Enqueue((next, item.Depth + 1));
++                }
++                return false;
++            }
++            var attributes = new HashSet<string>();
++            foreach (Match m in Regex.Matches(vertex, @"\b(out_attr\d+\.[xyzw])\s*=\s*([^;]+);"))
++                if (CameraRay(m.Groups[2].Value)) attributes.Add(m.Groups[1].Value.Replace("out_attr", "in_attr"));
++            if (attributes.Count == 0) return fragment;
++            var rays = new HashSet<string>();
++            foreach (Match m in Regex.Matches(fragment, @"\b(temp_\d+)\s*=\s*(in_attr\d+\.[xyzw]);"))
++                if (attributes.Contains(m.Groups[2].Value)) rays.Add(m.Groups[1].Value);
++            if (rays.Count == 0) return fragment;
++            int count = 0;
++            string Correct(Match m, int a, int b)
++            {
++                string depth = rays.Contains(m.Groups[a].Value) ? m.Groups[b].Value : rays.Contains(m.Groups[b].Value) ? m.Groups[a].Value : null;
++                if (depth == null) return m.Value;
++                count++;
++                return m.Value + $" {m.Groups[1].Value} += ryu_stereo_reconstruction.x * ({depth} + ryu_stereo_reconstruction.y) * fp_c3.data[0].z;";
++            }
++            fragment = Regex.Replace(fragment, @"\b(temp_\d+) = (temp_\d+) \* (temp_\d+);", m => Correct(m, 2, 3));
++            fragment = Regex.Replace(fragment, @"\b(temp_\d+) = fma\((temp_\d+), (temp_\d+), (temp_\d+)\);", m => Correct(m, 2, 3));
++            if (count == 0) return fragment;
++            int main = fragment.IndexOf("void main()", StringComparison.Ordinal);
++            if (main < 0) return fragment;
++            fragment = fragment.Insert(main, "uniform vec2 ryu_stereo_reconstruction;\n");
++            Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo: camera reconstruction corrected in {count} expressions ({attributes.Count} ray attributes)");
++            return fragment;
++        }
++    }
++}
+--- a/src/Ryujinx.Graphics.OpenGL/VertexArray.cs
++++ b/src/Ryujinx.Graphics.OpenGL/VertexArray.cs
+@@ -14,6 +14,7 @@
+         private readonly VertexBufferDescriptor[] _vertexBuffers;
+ 
+         private int _minVertexCount;
++        internal bool HasInstancedBuffers { get; private set; }
+ 
+         private uint _vertexAttribsInUse;
+         private uint _vertexBuffersInUse;
+@@ -42,6 +43,7 @@
+         public void SetVertexBuffers(ReadOnlySpan<VertexBufferDescriptor> vertexBuffers)
+         {
+             int minVertexCount = int.MaxValue;
++            HasInstancedBuffers = false;
+ 
+             int bindingIndex;
+             for (bindingIndex = 0; bindingIndex < vertexBuffers.Length; bindingIndex++)
+@@ -50,6 +52,7 @@
+ 
+                 if (vb.Buffer.Handle != BufferHandle.Null)
+                 {
++                    HasInstancedBuffers |= vb.Divisor != 0;
+                     int vertexCount = vb.Stride <= 0 ? 0 : vb.Buffer.Size / vb.Stride;
+                     if (minVertexCount > vertexCount)
+                     {
+--- a/src/Ryujinx.Graphics.OpenGL/Window.cs
++++ b/src/Ryujinx.Graphics.OpenGL/Window.cs
+@@ -11,6 +11,7 @@
+     class Window : IWindow, IDisposable
+     {
+         private readonly OpenGLRenderer _renderer;
++        private readonly NativeStereo _nativeStereo = new();
+ 
+         private bool _initialized;
+ 
+@@ -44,10 +45,20 @@
+ 
+             (int oldDrawFramebufferHandle, int oldReadFramebufferHandle) = ((Pipeline)_renderer.Pipeline).GetBoundFramebuffers();
+ 
+-            CopyTextureToFrameBufferRGB(0, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, swapBuffersCallback);
+-
+-            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, oldReadFramebufferHandle);
+-            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, oldDrawFramebufferHandle);
++            if (NativeStereo.Enabled)
++            {
++                // Keep the diagnostic capture path intact. Normal presentation
++                // needs only one resample into each half of the final surface.
++                bool direct = NativeStereo.DirectOutput &&
++                    string.IsNullOrEmpty(Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE")) &&
++                    string.IsNullOrEmpty(Environment.GetEnvironmentVariable("RYU_STEREO_TRACE"));
++                _nativeStereo.Present(fbo => CopyTextureToFrameBufferRGB(fbo, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, () => { }, direct), _width, _height, swapBuffersCallback, direct);
++            }
++            else
++                CopyTextureToFrameBufferRGB(0, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, swapBuffersCallback);
++
++            FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, oldReadFramebufferHandle);
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, oldDrawFramebufferHandle);
+ 
+             GL.Enable(EnableCap.FramebufferSrgb);
+ 
+@@ -65,10 +76,10 @@
+             _updateSize = true;
+         }
+ 
+-        private void CopyTextureToFrameBufferRGB(int drawFramebuffer, int readFramebuffer, TextureView view, ImageCrop crop, Action swapBuffersCallback)
+-        {
+-            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, drawFramebuffer);
+-            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, readFramebuffer);
++        private void CopyTextureToFrameBufferRGB(int drawFramebuffer, int readFramebuffer, TextureView view, ImageCrop crop, Action swapBuffersCallback, bool directStereo = false)
++        {
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, drawFramebuffer);
++            FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, readFramebuffer);
+ 
+             TextureView viewConverted = view.Format.IsBgr() ? _renderer.TextureCopy.BgraSwap(view) : view;
+ 
+@@ -95,8 +106,8 @@
+                 }
+             }
+ 
+-            GL.BindFramebuffer(FramebufferTarget.DrawFramebuffer, drawFramebuffer);
+-            GL.BindFramebuffer(FramebufferTarget.ReadFramebuffer, readFramebuffer);
++            FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, drawFramebuffer);
++            FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, readFramebuffer);
+ 
+             GL.FramebufferTexture(
+                 FramebufferTarget.ReadFramebuffer,
+@@ -109,7 +120,11 @@
+             GL.Disable(EnableCap.RasterizerDiscard);
+             GL.Disable(IndexedEnableCap.ScissorTest, 0);
+ 
+-            GL.Clear(ClearBufferMask.ColorBufferBit);
++            if (!directStereo || NativeStereo.CurrentEye == 0)
++            {
++                if (directStereo) GL.ColorMask(true, true, true, true);
++                GL.Clear(ClearBufferMask.ColorBufferBit);
++            }
+ 
+             int srcX0, srcX1, srcY0, srcY1;
+ 
+@@ -193,6 +208,13 @@
+                     0);
+             }
+ 
++            if (directStereo)
++            {
++                int eyeOffset = NativeStereo.CurrentEye * (_width / 2);
++                dstX0 = dstX0 / 2 + eyeOffset;
++                dstX1 = dstX1 / 2 + eyeOffset;
++            }
++
+             GL.BlitFramebuffer(
+                 srcX0,
+                 srcY0,
+@@ -205,10 +227,14 @@
+                 ClearBufferMask.ColorBufferBit,
+                 _isLinear ? BlitFramebufferFilter.Linear : BlitFramebufferFilter.Nearest);
+ 
++
+             // Remove Alpha channel
+-            GL.ColorMask(false, false, false, true);
+-            GL.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+-            GL.Clear(ClearBufferMask.ColorBufferBit);
++            if (!directStereo || NativeStereo.CurrentEye == 1)
++            {
++                GL.ColorMask(false, false, false, true);
++                GL.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
++                GL.Clear(ClearBufferMask.ColorBufferBit);
++            }
+ 
+             for (int i = 0; i < Constants.MaxRenderTargets; i++)
+             {
+@@ -218,9 +244,10 @@
+             // Set clip control, viewport and the framebuffer to the output to placate overlays and OBS capture.
+             GL.ClipControl(ClipOrigin.LowerLeft, ClipDepthMode.NegativeOneToOne);
+             GL.Viewport(0, 0, _width, _height);
+-            GL.BindFramebuffer(FramebufferTarget.Framebuffer, drawFramebuffer);
++            FramebufferBinding.Bind(FramebufferTarget.Framebuffer, drawFramebuffer);
+ 
+             swapBuffersCallback();
++
+ 
+             ((Pipeline)_renderer.Pipeline).RestoreClipControl();
+             ((Pipeline)_renderer.Pipeline).RestoreScissor0Enable();
+@@ -265,6 +292,7 @@
+ 
+         public void Dispose()
+         {
++            _nativeStereo.Dispose();
+             if (!_initialized)
+             {
+                 return;
+@@ -274,7 +302,7 @@
+ 
+             if (_copyFramebufferHandle != 0)
+             {
+-                GL.DeleteFramebuffer(_copyFramebufferHandle);
++                FramebufferBinding.Delete(_copyFramebufferHandle);
+ 
+                 _copyFramebufferHandle = 0;
+             }
+--- a/src/Ryujinx.Input/HLE/NpadController.cs
++++ b/src/Ryujinx.Input/HLE/NpadController.cs
+@@ -15,6 +15,8 @@
+ {
+     public class NpadController : IDisposable
+     {
++        private static readonly bool TraceRawInput = Environment.GetEnvironmentVariable("RYU_INPUT_TRACE") == "1";
++        private long _nextInputTrace;
+         private class HLEButtonMappingEntry
+         {
+             public readonly GamepadButtonInputId DriverInputId;
+@@ -376,6 +378,11 @@
+ 
+                 state.LStick = ClampToCircle(ApplyDeadzone(leftAxisX, leftAxisY, controllerConfig.DeadzoneLeft), controllerConfig.RangeLeft);
+                 state.RStick = ClampToCircle(ApplyDeadzone(rightAxisX, rightAxisY, controllerConfig.DeadzoneRight), controllerConfig.RangeRight);
++                if (TraceRawInput && System.Diagnostics.Stopwatch.GetTimestamp() >= _nextInputTrace)
++                {
++                    _nextInputTrace = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency;
++                    Logger.Notice.Print(LogClass.Hid, $"ControllerRaw left=({leftAxisX:F4},{leftAxisY:F4}) right=({rightAxisX:F4},{rightAxisY:F4}) deadzone={controllerConfig.DeadzoneLeft:F2} output=({state.LStick.Dx},{state.LStick.Dy})");
++                }
+             }
+ 
+             return state;

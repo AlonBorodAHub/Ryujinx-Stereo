@@ -1,0 +1,57 @@
+Rebuilding Ryujinx Stereo 0.1.0
+
+1. Extract source/Ryujinx-Stereo-source.zip into a working folder.
+2. Install .NET SDK 9.0.319 or a compatible .NET 9 SDK. Package restore needs
+   the public nuget.org feed declared in nuget.config.
+3. In the source folder, run:
+   dotnet publish src/Ryujinx/Ryujinx.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:RuntimeFrameworkVersion=9.0.21 -o build
+4. Copy build's runtime files into the package's emulator folder, preserving
+   your own data separately. Keep the standalone StereoSettings.json and
+   clean portable/Config.json when assembling a fresh distributable.
+5. Compile release-tools/StereoLauncher.cs with Windows' .NET Framework C#
+   compiler, targeting winexe x64 and referencing System.Windows.Forms.dll:
+   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /platform:x64 /optimize+ /reference:System.Windows.Forms.dll /out:"Ryujinx Stereo.exe" release-tools\StereoLauncher.cs
+
+Baseline source: https://github.com/Leuconoe/Ryubing
+Baseline commit: 80ab0f96b95dc13f5bdb9f365a3363d25040e236
+The complete modified snapshot is supplied so the baseline host need not
+remain online. native-stereo.patch is a readable baseline-to-modified diff.
+The release uses the tested application's existing runtime binaries, not
+newly compiled emulator assemblies. File hashes are in manifest.json.
+
+Native library sources and linkage
+The FFmpeg DLLs report version 6.1.2 and this configuration:
+  --target-os=mingw32 --disable-debug --disable-all --disable-autodetect --enable-shared --enable-avcodec --enable-avutil --enable-decoder='h264,vp8,vp9' --prefix=bin/build
+They report "LGPL version 2.1 or later". The original NuGet package is
+Ryujinx.Graphics.Nvdec.Dependencies.AllArch 6.1.2-build3. The corresponding
+upstream FFmpeg source is bundled as native/ffmpeg-6.1.2.tar.xz, including
+its configure/build scripts and licenses. Use a MinGW-w64 toolchain and
+those configure options (plus the appropriate compiler/cross-prefix for
+your host), then make and make install to rebuild the DLLs.
+Source origin: https://ffmpeg.org/releases/ffmpeg-6.1.2.tar.xz
+
+OpenAL32.dll is supplied by Ryujinx.Audio.OpenAL.Dependencies 1.21.0.1.
+OpenAL Soft 1.21.0 source and its CMake build files are bundled as
+native/openal-soft-1.21.0.tar.gz. Follow the included upstream build guide;
+build a shared Windows x64 library (LIBTYPE=SHARED). The application also
+supports SDL2 audio, which is the default.
+Source origin: https://github.com/kcat/openal-soft/releases/tag/1.21.0
+
+These shared native libraries have not been modified by the stereo work.
+They are dynamically linked, remain separate DLLs and can be replaced with
+compatible user-built versions. Application source and notices are supplied
+without restrictions on debugging modifications to those libraries.
+Managed dependency versions, authors, license declarations and available
+package notices are in licenses/dependencies.json and licenses/packages/.
+The .NET runtime license and third-party notices are under licenses/dotnet/.
+
+Stereo implementation
+NativeStereo controls same-state eye projection and SBS presentation.
+StereoProjectedVaryings and reconstruction passes align screen-space effects
+to each eye. Layered storage and instanced draws reduce repeated GL work.
+StereoArraySampling rewrites eligible sampled scene textures to eye layers.
+The launcher enables these environment flags before loading any renderer.
+StereoSettings.json supplies live controls and keeps shader cache variants
+separate. This release does not enable the experimental combined-threading
+override. The previous two-draw layered path remains available via the
+launcher's --safe-stereo switch. All sources for that launcher are included.

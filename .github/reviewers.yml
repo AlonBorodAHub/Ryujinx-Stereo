@@ -1,0 +1,17 @@
+cpu:
+  - GreemDev
+
+gpu:
+  - GreemDev
+
+gui:
+  - GreemDev
+
+horizon:
+  - GreemDev
+
+infra:
+  - GreemDev
+
+default:
+  - '@developers'

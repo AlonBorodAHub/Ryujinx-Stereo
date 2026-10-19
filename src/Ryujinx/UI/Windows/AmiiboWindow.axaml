@@ -1,0 +1,87 @@
+<window:StyleableAppWindow
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:window="clr-namespace:Ryujinx.Ava.UI.Windows"
+    xmlns:viewModels="clr-namespace:Ryujinx.Ava.UI.ViewModels"
+    xmlns:ext="clr-namespace:Ryujinx.Ava.Common.Markup"
+    xmlns:controls="clr-namespace:Ryujinx.Ava.UI.Controls"
+    mc:Ignorable="d"
+    d:DesignWidth="400"
+    d:DesignHeight="350"
+    x:Class="Ryujinx.Ava.UI.Windows.AmiiboWindow"
+    x:DataType="viewModels:AmiiboWindowViewModel"
+    CanResize="False"
+    WindowStartupLocation="CenterOwner"
+    Width="800"
+    MinHeight="650"
+    Height="650"
+    SizeToContent="Manual"
+    MinWidth="600"
+    Focusable="True">
+    <Design.DataContext>
+        <viewModels:AmiiboWindowViewModel />
+    </Design.DataContext>
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="15" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" >
+        <Grid Name="FlushControls" ColumnDefinitions="Auto,Auto" Grid.Row="1" Margin="-15">
+            <controls:RyujinxLogo 
+                Grid.Column="0"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Margin="8, 8, 7, 0"
+                ToolTip.Tip="{ext:WindowTitle Amiibo}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0, 0, 0, 100">
+                <StackPanel Spacing="10" Orientation="Horizontal" HorizontalAlignment="Left">
+                    <TextBlock VerticalAlignment="Center" Text="{ext:Locale AmiiboSeriesLabel}" />
+                    <ComboBox Margin="0, 8, 0, 0" SelectedIndex="{Binding SeriesSelectedIndex}" ItemsSource="{Binding AmiiboSeries}" MinWidth="100" />
+                </StackPanel>
+                <StackPanel Margin="15, 0, 0, 0" Spacing="10" Orientation="Horizontal" >
+                    <TextBlock VerticalAlignment="Center" Text="{ext:Locale AmiiboCharacterLabel}" />
+                    <ComboBox Margin="0, 8, 0, 0" SelectedIndex="{Binding AmiiboSelectedIndex}" MinWidth="100" ItemsSource="{Binding AmiiboList}" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+        <Grid Name="NormalControls" ColumnDefinitions="*,*" Grid.Row="1" HorizontalAlignment="Stretch" >
+            <StackPanel Spacing="10" Orientation="Horizontal" HorizontalAlignment="Left">
+                <TextBlock VerticalAlignment="Center" Text="{ext:Locale AmiiboSeriesLabel}" />
+                <ComboBox SelectedIndex="{Binding SeriesSelectedIndex}" ItemsSource="{Binding AmiiboSeries}" MinWidth="100" />
+            </StackPanel>
+            <StackPanel Spacing="10" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <TextBlock VerticalAlignment="Center" Text="{ext:Locale AmiiboCharacterLabel}" />
+                <ComboBox SelectedIndex="{Binding AmiiboSelectedIndex}" MinWidth="100" ItemsSource="{Binding AmiiboList}" />
+            </StackPanel>
+        </Grid>
+        <StackPanel Margin="20" Grid.Row="2">
+            <Image Source="{Binding AmiiboImage}" Height="350" Width="350" HorizontalAlignment="Center" />
+            <ScrollViewer MaxHeight="120" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                          Margin="20" VerticalAlignment="Top" HorizontalAlignment="Stretch">
+                <TextBlock TextWrapping="Wrap" Text="{Binding Usage}" HorizontalAlignment="Center"
+                           TextAlignment="Center" />
+            </ScrollViewer>
+        </StackPanel>
+        <Grid Grid.Row="3" ColumnDefinitions="Auto,Auto,*,Auto,Auto">
+            <CheckBox Margin="10" Grid.Column="0" VerticalContentAlignment="Center" 
+                      IsChecked="{Binding ShowAllAmiibo}"
+                      Content="{ext:Locale AmiiboOptionsShowAllLabel}" />
+            <CheckBox HotKey="H" 
+                      Margin="10" VerticalContentAlignment="Center" Grid.Column="1" 
+                      IsChecked="{Binding UseRandomUuid}"
+                      Content="{ext:Locale AmiiboOptionsUsRandomTagLabel}" />
+            <Button Grid.Column="3" 
+                    IsEnabled="{Binding EnableScanning}" 
+                    Width="80"
+                    Name="ScanButton"
+                    HotKey="Return"
+                    Content="{ext:Locale AmiiboScanButtonLabel}"
+                    Click="ScanButton_Click" />
+            <Button Grid.Column="4" 
+                    Margin="10,0" 
+                    Width="80"
+                    Name="CancelButton"
+                    HotKey="Escape"
+                    Content="{ext:Locale InputDialogCancel}"
+                    Click="CancelButton_Click" />
+        </Grid>
+    </Grid>
+</window:StyleableAppWindow>
