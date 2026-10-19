@@ -16,8 +16,10 @@ foreground-only fullscreen hotkeys. The user confirmed F9/F10 closed Zelda
 and showed the saved MP4. That gameplay clip was not independently located
 or decoded; codec/audio assertions refer to the separate synthetic GPU test.
 
-Release preparation validates publication source builds, relocated --help
-startup, clean config, runtime hashes and archive exclusions. The download
+Publication source builds passed for both engines. Relocated library startup
+loaded the clean portable configuration with OpenGL and FXAA; --help opens
+the library in this frontend rather than exiting. No game was loaded.
+Release preparation checks runtime hashes and archive exclusions. The download
 uses allow-listed runtime files and fresh keyboard configuration, without
 private profiles or game data.
 

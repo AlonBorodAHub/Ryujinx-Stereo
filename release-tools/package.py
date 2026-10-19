@@ -64,7 +64,7 @@ manifest = {'name': 'Ryujinx Stereo', 'version': '0.2.0-experimental', 'platform
             'external_dependencies': ['LeiaSR display runtime for native output', 'FFmpeg with h264_nvenc for recording'],
             'files': files}
 (destination / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-archive = destination.with_suffix('.zip')
+archive = destination.parent / (destination.name + '.zip')
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as output:
     for p in sorted(destination.rglob('*')):
         if p.is_file():
