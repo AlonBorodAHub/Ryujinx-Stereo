@@ -1,6 +1,6 @@
 {
-  "separation": 0.02028,
-  "convergence": 600,
+  "separation": 0.016256448,
+  "convergence": 1900,
   "disable_character_shadows": false,
   "direct_output": false,
   "runtime_resolution_scale": 1.5,
@@ -8,5 +8,7 @@
   "layered_framebuffer": true,
   "instanced_eyes": true,
   "direct_panel_output": true,
-  "stereo_enabled": true
+  "stereo_enabled": true,
+  "default_separation": 0.02028,
+  "default_convergence": 1775.0
 }

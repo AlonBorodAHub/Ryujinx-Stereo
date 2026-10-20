@@ -278,6 +278,8 @@ namespace Ryujinx.Input.HLE
             }
         }
 
+        private readonly StereoControllerAdjustments _stereoAdjustments = new();
+
         public void Update()
         {
             // _gamepad may be altered by other threads
@@ -285,7 +287,7 @@ namespace Ryujinx.Input.HLE
 
             if (gamepad != null && GamepadDriver != null)
             {
-                State = gamepad.GetMappedStateSnapshot();
+                State = _stereoAdjustments.Process(gamepad.GetMappedStateSnapshot(), System.Environment.TickCount64);
 
                 if (_config is StandardControllerInputConfig controllerConfig && controllerConfig.Motion.EnableMotion)
                 {

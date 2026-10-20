@@ -1,3 +1,38 @@
+Ryujinx Stereo 0.3.0 experimental: validation scope, 2026-10-20
+
+Both publication engines built successfully as self-contained Windows x64.
+The existing Avalonia constructor and Windows-only audio API warnings remain.
+The release binaries exclude WonderDrawProbe and its per-frame/per-draw hooks.
+
+The release OpenGL renderer passed all 227 locally sampled Wonder vertex
+shaders (184 scene/effect corrections), seven terrain variants, altered
+resource-binding checks, and rejection of different terrain layouts. Hidden
+GPU draw checks passed for eye separation, depth, convergence, sorting-offset
+removal, original occlusion, UI plane, and the six-pixel edge inset at shipped
+Wonder defaults. The same shader samples receive no Wonder corrections when
+Odyssey is selected. Terrain and particle modes passed separately. Game shader
+samples/captures are local test inputs and are not distributed.
+
+ControlChecks passes shortcut parsing, duplicate rejection, foreground gating,
+controller chord/repeat behavior, settings preservation, saved-default reset,
+and transient feedback. Run after restoring/building with:
+  dotnet run --project release-tools/ControlChecks/ControlChecks.csproj -c Release
+
+During local development the user visually confirmed Wonder terrain, coins,
+music blocks, text/balloons, cursor and screen edges in tested scenes. This is
+not a full-game guarantee. Shader analysis caching reduces compilation work;
+first-time shaders can still hitch, and the versioned cache requires warm-up.
+No overworld-specific adjustment is included. No new FPS or fresh-PC gameplay
+benchmark is claimed for the release. Shared F9/F10 recording is retained;
+recording was not independently re-recorded for Wonder in this publication.
+
+The package uses fresh portable configuration, public game profiles and an
+allow-list of runtime files. No ROMs, keys, firmware, saves, shader caches,
+recordings, personal controller configuration or diagnostic captures belong
+in the archive. Dependency licenses/source archives remain included.
+
+Prior 0.2.0 validation (historical, not rerun in full for this release):
+
 Ryujinx Stereo 0.2.0 experimental: validation scope, 2026-10-19
 
 Both current engines compile as self-contained Windows x64. GPU regressions

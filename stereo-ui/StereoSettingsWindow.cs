@@ -25,7 +25,7 @@ internal sealed class StereoSettingsWindow : Window
         Title = "Ryujinx Stereo — Stereo 3D";
         Width = 560; Height = 580; MinWidth = 460; MinHeight = 540;
         CanResize = true; WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var choices = new List<Choice> { new(StereoProfiles.Mario, "Super Mario Odyssey"), new(StereoProfiles.Zelda, "The Legend of Zelda: Breath of the Wild") };
+        var choices = new List<Choice> { new(StereoProfiles.Mario, "Super Mario Odyssey"), new(StereoProfiles.Zelda, "The Legend of Zelda: Breath of the Wild"), new(StereoProfiles.Wonder, "Super Mario Bros. Wonder") };
         foreach (var app in applications ?? Enumerable.Empty<ApplicationData>())
         {
             if (app.Id != 0 && choices.All(c => c.Id != app.IdBaseString)) choices.Add(new(app.IdBaseString, app.Name));
@@ -53,6 +53,9 @@ internal sealed class StereoSettingsWindow : Window
         panel.Children.Add(_convergence);
         panel.Children.Add(new TextBlock { Text = "Depth sets the strength of 3D. Convergence sets the distance where the eyes align. Values differ between games.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(new TextBlock { Text = "Apply updates depth and convergence during gameplay. Enabling or disabling 3D takes effect on the next game launch. Press F6 to open these controls while playing.", TextWrapping = TextWrapping.Wrap });
+        var shortcuts = new Button { Content = "Keyboard shortcuts…" };
+        shortcuts.Click += async (_, _) => await new StereoShortcutsWindow().ShowDialog(this);
+        panel.Children.Add(shortcuts);
         panel.Children.Add(_status);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
         buttons.Children.Add(reset); buttons.Children.Add(apply); buttons.Children.Add(close); panel.Children.Add(buttons);
@@ -70,7 +73,7 @@ internal sealed class StereoSettingsWindow : Window
             _depth.Value = StereoProfiles.Number(profile, "separation", StereoProfiles.DefaultSeparation(_id)) / StereoProfiles.DefaultSeparation(_id) * 100;
             _convergence.Increment = _id == StereoProfiles.Zelda ? .5m : 25m;
             _convergence.Value = (decimal)StereoProfiles.Number(profile, "convergence", StereoProfiles.DefaultConvergence(_id));
-            _status.Text = _id is StereoProfiles.Mario or StereoProfiles.Zelda ? "Working game profile loaded." : "New game profile. Stereo compatibility needs to be checked in gameplay.";
+            _status.Text = _id is StereoProfiles.Mario or StereoProfiles.Zelda or StereoProfiles.Wonder ? "Working game profile loaded." : "New game profile. Stereo compatibility needs to be checked in gameplay.";
         }
         catch (Exception error) { _status.Text = error.Message; }
     }
@@ -79,6 +82,7 @@ internal sealed class StereoSettingsWindow : Window
         try
         {
             StereoProfiles.Save(_id, _enabled.IsChecked == true, _depth.Value, (double)(_convergence.Value ?? 0));
+            Ryujinx.Input.HLE.StereoAdjustmentFeedback.Publish(_depth.Value, (double)(_convergence.Value ?? 0));
             _status.Text = "Saved for this game. Depth and convergence apply to an active 3D session within a second.";
         }
         catch (Exception error) { _status.Text = "Could not save: " + error.Message; }

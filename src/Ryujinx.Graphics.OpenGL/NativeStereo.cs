@@ -108,9 +108,11 @@ namespace Ryujinx.Graphics.OpenGL
             var main = new Regex(@"\bvoid\s+main\s*\(\s*(?:void\s*)?\)");
             if (!main.IsMatch(code)) return code;
             string correction = "if (abs(gl_Position.w - 1.0) > 0.0001) gl_Position.x += ryu_geometry_stereo.x * (gl_Position.w - ryu_geometry_stereo.y);\n";
+            bool wonderCamera = stage == ShaderStage.Vertex && WonderStereoProjection.Enabled && WonderStereoProjection.Matches(code);
+            if (wonderCamera) correction = WonderStereoProjection.GetCorrection(code);
             string projectedVaryings = stage == ShaderStage.Vertex ? StereoProjectedVaryings.Correction(code) : "";
             correction += projectedVaryings;
-            bool projectedDepth = false;
+            bool projectedDepth = wonderCamera;
             if (stage == ShaderStage.Vertex)
             {
                 string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(code.Replace("\r\n", "\n"))));
@@ -213,7 +215,8 @@ namespace Ryujinx.Graphics.OpenGL
                 {
                     FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, _framebuffers[eye]);
                     FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, 0);
-                    GL.BlitFramebuffer(0, 0, width, height, eye * (width / 2), 0,
+                    int edgeInset = WonderStereoProjection.EdgeInset(width, Separation, Convergence);
+                    GL.BlitFramebuffer(edgeInset, 0, width - edgeInset, height, eye * (width / 2), 0,
                         (eye + 1) * (width / 2), height, ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
                 }
                 if (TraceFrame)

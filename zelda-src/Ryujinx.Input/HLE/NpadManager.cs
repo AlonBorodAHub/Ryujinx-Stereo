@@ -210,10 +210,12 @@ namespace Ryujinx.Input.HLE
             ReloadConfiguration(inputConfig, enableKeyboard, enableMouse);
         }
 
+        private readonly StereoKeyboardAdjustments _stereoKeyboard = new();
         public void Update(float aspectRatio = 1)
         {
             lock (_lock)
             {
+                _stereoKeyboard.Update();
                 List<GamepadInput> hleInputStates = [];
                 List<SixAxisInput> hleMotionStates = new(NpadDevices.MaxControllers);
 

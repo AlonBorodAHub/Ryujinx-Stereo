@@ -1,3 +1,13 @@
+# 0.3.0-experimental — 2026-10-20
+
+- Add Wonder 1.0.1 stereo camera corrections, terrain/effect alignment, gameplay-plane text/UI, and stereo-edge cropping.
+- Use stable separate-eye rendering for Wonder and version its shader cache.
+- Cache shader dependency analysis to reduce shader compilation work.
+- Add controller and customizable keyboard depth/convergence adjustments, reset-to-profile defaults, and a transient value overlay.
+- Include updated Odyssey, Zelda and Wonder defaults; retain 4K60 SBS recording for all three titles.
+- Exclude temporary Wonder draw-capture probes from public source and binaries.
+- Overworld-specific depth and previously attempted Odyssey dialogue/effect changes are not included.
+
 # Changes
 
 ## 0.2.0 experimental â€” 2026-10-19

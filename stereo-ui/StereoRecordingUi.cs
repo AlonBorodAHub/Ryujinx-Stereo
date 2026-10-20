@@ -15,6 +15,7 @@ internal static class StereoRecordingUi
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint window, out uint processId);
     internal static void Attach(MainWindow owner)
     {
+        StereoAdjustmentOverlay.Attach(owner);
         // Native OpenGL fullscreen focus can bypass Avalonia's routed key events.
         // Poll only while this process owns the foreground window.
         if (OperatingSystem.IsWindows())

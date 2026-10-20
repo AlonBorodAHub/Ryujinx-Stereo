@@ -11,6 +11,7 @@ namespace Ryujinx.Ava.Stereo;
 internal static class StereoProfiles
 {
     public const string Mario = "0100000000010000";
+    public const string Wonder = "010015100b514000";
     public const string Zelda = "01007ef00011e000";
     public static string Home => Path.GetFullPath(Environment.GetEnvironmentVariable("RJ_STEREO_HOME") ?? AppContext.BaseDirectory);
     public static string DirectoryPath => Path.Combine(Home, "profiles");

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Ryujinx.Input/HLE/StereoControllerAdjustments.cs" />
+    <Compile Include="../../src/Ryujinx.Input/HLE/StereoKeyboardBindings.cs" />
+    <Compile Include="../../src/Ryujinx.Input/HLE/StereoKeyboardAdjustments.cs" />
+
+    <ProjectReference Include="../../src/Ryujinx.Input/Ryujinx.Input.csproj" />
+  </ItemGroup>
+</Project>

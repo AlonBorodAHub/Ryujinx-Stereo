@@ -1,6 +1,6 @@
 {
-  "separation": 0.016224,
-  "convergence": 6,
+  "separation": 0.011356799999999998,
+  "convergence": 12,
   "disable_character_shadows": false,
   "direct_output": true,
   "runtime_resolution_scale": 1.5,
@@ -19,5 +19,7 @@
   "prefetch_buffer_readbacks": true,
   "host_swap_interval": -1,
   "direct_panel_output": true,
-  "stereo_enabled": true
+  "stereo_enabled": true,
+  "default_separation": 0.011356799999999998,
+  "default_convergence": 12.0
 }

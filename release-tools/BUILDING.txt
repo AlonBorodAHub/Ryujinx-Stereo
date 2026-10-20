@@ -1,10 +1,10 @@
-Building Ryujinx Stereo 0.2.0 experimental (Windows x64)
+Building Ryujinx Stereo 0.3.0 experimental (Windows x64)
 
 Use .NET SDK 9.0.319 or compatible .NET 9 SDK. Restore uses nuget.org.
 From the repository root:
   powershell -ExecutionPolicy Bypass -File release-tools/Build-Stereo.ps1
 
-Publishes src/Ryujinx/Ryujinx.csproj as the library/Mario engine and
+Publishes src/Ryujinx/Ryujinx.csproj as the library/Mario/Wonder engine and
 zelda-src/Ryujinx/Ryujinx.csproj under engines/zelda. Shared sources link
 stereo-ui/ and stereo-recording/. Output: build/package. Self-contained,
 with trimming and single-file packing disabled. Do not overwrite a running
@@ -46,3 +46,5 @@ replaceable. Package licenses and dependency notices are in licenses/.
 
 Baseline https://github.com/Leuconoe/Ryubing
 Commit 80ab0f96b95dc13f5bdb9f365a3363d25040e236
+
+Control regression checks: dotnet run --project release-tools/ControlChecks/ControlChecks.csproj -c Release
