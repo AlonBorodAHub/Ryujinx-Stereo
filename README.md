@@ -1,14 +1,14 @@
 # Ryujinx Stereo
 
-Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, and **Super Mario Bros. Wonder**. Both eyes render the same emulated game state.
+Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, **Super Mario Bros. Wonder**, and **Super Mario 3D World + Bowser's Fury**. Both eyes render the same emulated game state.
 
-**[Download 0.3.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.3.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
+**[Download 0.4.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.4.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
 
 ## Setup
 
 1. Extract the entire ZIP to a writable folder and run **Ryujinx Stereo.exe**. It opens the normal game library in a window with menus visible.
 2. Supply your own games, console keys and firmware. Configure your controller in Options > Settings > Input and add your games folder. Portable data starts with a clean keyboard configuration.
-3. Double-click Odyssey, Zelda or Wonder. The library selects that game's renderer and stereo profile. Close gameplay to return to the library.
+3. Double-click a supported game. The library selects that game's renderer and stereo profile. Close gameplay to return to the library.
 4. Open **Stereo 3D > Depth & convergence** or press **F6** to adjust depth and convergence. Settings are stored in `profiles/<title-id>.json` and reload during play. F11 toggles fullscreen.
 
 Stereo requires OpenGL. Defaults include 1.5× internal rendering, FXAA and a hidden console. Configure physical controllers locally; the tested controller stopped drifting at left/right stick deadzones of 0.32/0.20.
@@ -45,7 +45,7 @@ Stable 60 fps throughout either game is not established. First-use shader compil
 This unofficial adaptation is based on [Leuconoe/Ryubing](https://github.com/Leuconoe/Ryubing), commit `80ab0f96b95dc13f5bdb9f365a3363d25040e236`. Emulator source is MIT licensed; dependency licenses remain separate. See LICENSE.txt, distribution/legal/THIRDPARTY.md and release notices. The legacy `native-stereo.patch` records 0.1.0; current source and Git history are authoritative for 0.2.0. Upstream publishing workflows remain disabled.
 
 
-## New in 0.3.0
+## Features introduced in 0.3.0
 
 Super Mario Bros. Wonder joins Odyssey and Breath of the Wild. Wonder 1.0.1
 has game-specific orthographic stereo corrections for terrain, characters,
@@ -79,3 +79,25 @@ new shader can still cause a hitch, and a changed shader-cache version needs
 one warm-up run. This remains experimental: tested scenes look correct, but
 all levels, cameras, effects and hardware have not been validated. Temporary
 Wonder frame-capture probes are excluded from this release.
+
+
+## New in 0.4.0
+
+Super Mario 3D World + Bowser's Fury now has a native stereo profile using
+separate-eye rendering, starting at 100% depth and 2250 convergence. These
+values are also its in-game reset defaults. The 3D World mode was visually
+confirmed to have convincing scene depth before the latest shadow correction.
+Bowser's Fury mode has not yet been separately validated.
+
+A title-specific deferred reconstruction correction compensates for the eye
+shift when rebuilding shadow-receiver positions from depth. This addresses
+the reported floating-shadow mechanism. Nine cached fragment variants compile,
+and GPU reconstruction tests pass for both eyes across depths and convergence
+settings. Final in-game visual confirmation of the shadow correction is still
+pending; it is not presented as a fully verified visual fix.
+
+The shadow correction uses a versioned cache directory. Initial shader
+compilation can cause stutters; warm gameplay samples were around 60 FPS on
+the development machine, with intermittent new-shader stalls. This is not a
+whole-game performance guarantee. Other games' reconstruction rules remain
+unchanged. No capture probes were added to the release.

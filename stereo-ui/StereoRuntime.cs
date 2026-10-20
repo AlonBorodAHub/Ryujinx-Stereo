@@ -51,7 +51,7 @@ internal static class StereoRuntime
         start.Environment["RYU_STEREO_BACKGROUND_COMPILATION"] = "0";
         start.Environment["RYU_STEREO_DRIVER_THREADING"] = id == StereoProfiles.Zelda ? "1" : "0";
         start.Environment["RYU_OPENGL_BUFFER_PREFLUSH"] = id == StereoProfiles.Zelda ? "1" : "0";
-        string pairedEyes = id == "010015100b514000" ? "0" : "1";
+        string pairedEyes = id is "010015100b514000" or "010028600ebda000" ? "0" : "1";
         start.Environment["RYU_STEREO_LAYERED"] = pairedEyes;
         start.Environment["RYU_STEREO_INSTANCED"] = pairedEyes;
         start.Environment["RYU_STEREO_ARRAY_SAMPLING"] = pairedEyes;

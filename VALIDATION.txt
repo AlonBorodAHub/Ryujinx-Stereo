@@ -1,3 +1,15 @@
+Ryujinx Stereo 0.4.0 experimental: validation scope, 2026-10-20
+
+New 3D World profile: separate-eye native output; depth 100%, convergence 2250.
+Local user confirmed good scene depth before the shadow correction. The shadow
+patch targets the observed camera-ray row 22 and linear-depth scale/bias at
+21.y/20.w. Nine cached fragment variants compile. A GPU computation test
+reconstructs the original receiver X for both eye signs and zero separation,
+at depths 100/600/900/3000 and convergence 600/2250. Odyssey isolation passes.
+All 169 cached vertex shaders compile through the stereo renderer. Private
+game shader inputs are not included. Bowser's Fury is not separately tested;
+final visual confirmation of corrected shadows remains pending.
+
 Ryujinx Stereo 0.3.0 experimental: validation scope, 2026-10-20
 
 Both publication engines built successfully as self-contained Windows x64.
@@ -62,3 +74,5 @@ No full-game benchmark or fresh-install gameplay on a second PC is claimed.
 Stable 60 fps everywhere, other GPUs/displays and other games are unverified.
 Capture repeats source frames below 60 fps. Display runtime and recording
 FFmpeg executable are external dependencies.
+
+0.4.0 publication: both self-contained Windows engines built; release-binary shadow GPU checks and control regression checks passed. Existing Avalonia warnings remain.

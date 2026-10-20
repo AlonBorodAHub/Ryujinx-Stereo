@@ -25,7 +25,7 @@ internal sealed class StereoSettingsWindow : Window
         Title = "Ryujinx Stereo — Stereo 3D";
         Width = 560; Height = 580; MinWidth = 460; MinHeight = 540;
         CanResize = true; WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var choices = new List<Choice> { new(StereoProfiles.Mario, "Super Mario Odyssey"), new(StereoProfiles.Zelda, "The Legend of Zelda: Breath of the Wild"), new(StereoProfiles.Wonder, "Super Mario Bros. Wonder") };
+        var choices = new List<Choice> { new(StereoProfiles.Mario, "Super Mario Odyssey"), new(StereoProfiles.Zelda, "The Legend of Zelda: Breath of the Wild"), new(StereoProfiles.Wonder, "Super Mario Bros. Wonder"), new(StereoProfiles.World, "Super Mario 3D World + Bowser's Fury") };
         foreach (var app in applications ?? Enumerable.Empty<ApplicationData>())
         {
             if (app.Id != 0 && choices.All(c => c.Id != app.IdBaseString)) choices.Add(new(app.IdBaseString, app.Name));
@@ -73,7 +73,7 @@ internal sealed class StereoSettingsWindow : Window
             _depth.Value = StereoProfiles.Number(profile, "separation", StereoProfiles.DefaultSeparation(_id)) / StereoProfiles.DefaultSeparation(_id) * 100;
             _convergence.Increment = _id == StereoProfiles.Zelda ? .5m : 25m;
             _convergence.Value = (decimal)StereoProfiles.Number(profile, "convergence", StereoProfiles.DefaultConvergence(_id));
-            _status.Text = _id is StereoProfiles.Mario or StereoProfiles.Zelda or StereoProfiles.Wonder ? "Working game profile loaded." : "New game profile. Stereo compatibility needs to be checked in gameplay.";
+            _status.Text = _id is StereoProfiles.Mario or StereoProfiles.Zelda or StereoProfiles.Wonder or StereoProfiles.World ? "Working game profile loaded." : "New game profile. Stereo compatibility needs to be checked in gameplay.";
         }
         catch (Exception error) { _status.Text = error.Message; }
     }

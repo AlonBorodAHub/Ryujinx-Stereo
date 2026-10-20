@@ -1,0 +1,13 @@
+{
+  "stereo_enabled": true,
+  "separation": 0.012,
+  "convergence": 2250,
+  "direct_output": false,
+  "direct_panel_output": true,
+  "runtime_resolution_scale": 1.5,
+  "alternating_eyes": false,
+  "layered_framebuffer": false,
+  "instanced_eyes": false,
+  "default_separation": 0.012,
+  "default_convergence": 2250
+}

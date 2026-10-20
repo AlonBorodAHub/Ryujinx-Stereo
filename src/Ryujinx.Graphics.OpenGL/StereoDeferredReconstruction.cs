@@ -13,7 +13,12 @@ namespace Ryujinx.Graphics.OpenGL
             var defs = new Dictionary<string, string>();
             foreach (Match m in Regex.Matches(vertex, @"\b(temp_\d+)\s*=\s*([^;]+);")) defs[m.Groups[1].Value] = m.Groups[2].Value;
             var attributes = new Dictionary<string, (string Scale, string DepthRow)>();
-            foreach (var layout in new[] { (Buffer: "3", RayRow: "11", DepthRow: "10"), (Buffer: "4", RayRow: "23", DepthRow: "22") })
+            bool world = string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "010028600ebda000", StringComparison.OrdinalIgnoreCase);
+            var layouts = new List<(string Buffer, string RayRow, string DepthRow)> { ("3", "11", "10"), ("4", "23", "22") };
+            // 3D World stores inverse-projection rays in row 22 and the linear
+            // depth scale/bias across rows 21.y and 20.w, unlike Odyssey/Zelda.
+            if (world) layouts.Add(("4", "22", "world-linear-depth"));
+            foreach (var layout in layouts)
             {
                 string row = $"vp_c{layout.Buffer}.data[{layout.RayRow}]";
                 foreach (Match m in Regex.Matches(vertex, @"\b(out_attr\d+\.x)\s*=\s*([^;]+);"))
@@ -47,6 +52,9 @@ namespace Ryujinx.Graphics.OpenGL
             var depthRows = new Dictionary<string, string>();
             foreach (Match m in Regex.Matches(fragment, @"\b(temp_\d+) = fma\(temp_\d+, (fp_c\d+\.data\[\d+\])\.[yz], \2\.x\);"))
                 depthRows[m.Groups[1].Value] = m.Groups[2].Value;
+            if (world)
+                foreach (Match m in Regex.Matches(fragment, @"\b(temp_\d+) = fma\(temp_\d+, fp_c4\.data\[21\]\.y, fp_c4\.data\[20\]\.w\);"))
+                    depthRows[m.Groups[1].Value] = "fp_c4.data[world-linear-depth]";
             int count = 0;
             fragment = Regex.Replace(fragment, @"\b(temp_\d+) = (temp_\d+) \* (temp_\d+);", m =>
             {

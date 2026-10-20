@@ -196,6 +196,7 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
         {
             if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1") basePath = Path.Combine(basePath, Environment.GetEnvironmentVariable("RYU_STEREO_ARRAY_SAMPLING") == "1" ? "array-sampling-stereo" : Environment.GetEnvironmentVariable("RYU_STEREO_INSTANCED") == "1" ? "instanced-stereo" : "layered-stereo");
             if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" && string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "010015100b514000", StringComparison.OrdinalIgnoreCase)) basePath = Path.Combine(basePath, "wonder-camera-v8");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" && string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "010028600ebda000", StringComparison.OrdinalIgnoreCase)) basePath = Path.Combine(basePath, "world-shadows-v1");
             _basePath = basePath;
             _guestStorage = new DiskCacheGuestStorage(basePath);
 
