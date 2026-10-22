@@ -30,6 +30,10 @@ namespace Ryujinx.Graphics.OpenGL
 
         private ProgramLinkStatus _status = ProgramLinkStatus.Incomplete;
         private int[] _shaderHandles;
+        private int _shadowProbeLocation = -2, _shadowProbeValue = -1;
+        private int _histogramEyeLocation = -2, _histogramEyeValue = -1;
+        private int _hudLocation = -2;
+        private float _hudValue = float.NaN;
         private int _stereoLocation = -2;
         private int _stereoLayerLocation = -2, _stereoLayerValue = int.MinValue;
         private bool _stereoPairable;
@@ -140,7 +144,7 @@ namespace Ryujinx.Graphics.OpenGL
                 if (NativeStereo.Enabled && shader.Stage == ShaderStage.Vertex && shader.Language == TargetLanguage.Glsl)
                 {
                     string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(shader.Code.Replace("\r\n", "\n"))));
-                    _stereoProjectedDepth |= StereoProjectionFixes.Outputs.ContainsKey(hash);
+                    _stereoProjectedDepth |= StereoProjectionFixes.Outputs.ContainsKey(hash) || TotkCloudDepth.Matches(shader.Code);
                 }
                 string dumpPath = Environment.GetEnvironmentVariable("RYU_STEREO_SHADER_DUMP");
                 if (NativeStereo.Enabled && !string.IsNullOrEmpty(dumpPath) && shader.Language == TargetLanguage.Glsl)
@@ -239,6 +243,23 @@ namespace Ryujinx.Graphics.OpenGL
         {
             if (!NativeStereo.Enabled) return;
             ResolveStereoLocation();
+            if (_histogramEyeLocation == -2) _histogramEyeLocation = GL.GetUniformLocation(Handle, "ryu_totk_histogram_eye");
+            int histogramEye = (NativeStereo.ShadowProbe == 8 || NativeStereo.ShadowProbe == 9) ? NativeStereo.CurrentEye : 0;
+            if (_histogramEyeLocation >= 0 && _histogramEyeValue != histogramEye)
+            {
+                GL.ProgramUniform1(Handle, _histogramEyeLocation, histogramEye);
+                _histogramEyeValue = histogramEye;
+            }
+            if (_shadowProbeLocation == -2) _shadowProbeLocation = GL.GetUniformLocation(Handle, "ryu_totk_shadow_probe");
+            int shadowProbe = NativeStereo.ShadowProbeProgram == 0 || NativeStereo.ShadowProbeProgram == Handle ? NativeStereo.ShadowProbe : 0;
+            if (_shadowProbeLocation >= 0 && _shadowProbeValue != shadowProbe)
+            {
+                GL.ProgramUniform1(Handle, _shadowProbeLocation, shadowProbe);
+                _shadowProbeValue = shadowProbe;
+            }
+
+            if (_hudLocation == -2) _hudLocation = GL.GetUniformLocation(Handle, "ryu_hud_offset");
+            if (_hudLocation >= 0 && _hudValue != NativeStereo.HudEyeOffset) { _hudValue = NativeStereo.HudEyeOffset; GL.ProgramUniform1(Handle, _hudLocation, _hudValue); }
             bool projectedDepth = StereoProjectedDepth;
             if (NativeStereo.ArraySampling)
             {

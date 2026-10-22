@@ -252,6 +252,7 @@ namespace Ryujinx.Input.HLE
                     }
                     else
                     {
+                        controller?.UpdateBackgroundStereoControls();
                         // Ensure that orientation isn't null
                         motionState.Item1.Orientation = new float[9];
                     }

@@ -1,8 +1,8 @@
 # Ryujinx Stereo
 
-Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, **Super Mario Bros. Wonder**, and **Super Mario 3D World + Bowser's Fury**. Both eyes render the same emulated game state.
+Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, **Super Mario Bros. Wonder**, **Super Mario 3D World + Bowser's Fury**, and **The Legend of Zelda: Tears of the Kingdom**. Both eyes render the same emulated game state.
 
-**[Download 0.4.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.4.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
+**[Download 0.5.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.5.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
 
 ## Setup
 
@@ -14,6 +14,8 @@ Experimental Windows x64 emulator with geometric stereo for **Super Mario Odysse
 Stereo requires OpenGL. Defaults include 1.5× internal rendering, FXAA and a hidden console. Configure physical controllers locally; the tested controller stopped drifting at left/right stick deadzones of 0.32/0.20.
 
 ## Display output
+
+F6 now offers per-game direct panel, half/full side-by-side, half/full over-under and row-interlaced output, plus eye swapping for all five supported games. See [display setup and limitations](docs/DISPLAY-OUTPUT.md). HDMI frame packing requires a separate native presentation backend and is unavailable.
 
 The supplied profiles enable direct LeiaSR panel output, tested on a Samsung Odyssey 3D G90XF. Install the display's supported LeiaSR runtime and make its runtime DLL directory available on PATH before launch. Our bridge DLL and source are included; the proprietary LeiaSR SDK/runtime are not bundled.
 
@@ -55,7 +57,7 @@ Wonder uses separate-eye rendering because the paired-eye optimization was
 unstable in level transitions. Its profile starts at 14% depth and 625
 convergence. The overworld has no separate depth adjustment.
 
-In-game controls (game window focused):
+In-game controls (depth/convergence also work while another window is focused):
 
 | Action | Keyboard | Controller |
 | --- | --- | --- |
@@ -101,3 +103,28 @@ compilation can cause stutters; warm gameplay samples were around 60 FPS on
 the development machine, with intermittent new-shader stalls. This is not a
 whole-game performance guarantee. Other games' reconstruction rules remain
 unchanged. No capture probes were added to the release.
+
+
+## New in 0.5.0: Tears of the Kingdom
+
+TOTK 1.0.0 now selects the Zelda OpenGL stereo engine automatically. Its included
+profile uses 2x internal resolution, 20% depth / 17 convergence as saved reset
+defaults, and 2% HUD pop-out. Adjust these with F6 for your display and comfort.
+For the tested performance configuration, set graphics anti-aliasing to None.
+
+The tested scenes now have corrected camera-dependent lighting on Link, matching
+tree shading between eyes, cloud/particle depth without silhouette cutouts, and
+full-width solid fades. These fixes are title-specific. Background diagnostic
+capture and performance profiling are disabled in normal TOTK launches. Manual
+F9/F10 recording remains available.
+
+**60 FPS mod setup matters:** the tested setup uses DynamicFPS 1.5.4 plus the
+separate **UI Blackscreen Fix 1.0.1** for game 1.0.0. DynamicFPS without that UI
+patch can make the D-pad quick-menu background black and the UI unstable; both
+were confirmed corrected after installing it. Neither third-party mod nor
+Nintendo UI assets are bundled. See [TOTK setup and validation](docs/TOTK.md).
+
+Depth/convergence keyboard and controller chords now work when another window
+is focused. Hold both sticks (L3 + R3) to request emulator exit; dEPTH retains
+ownership of its own exit sequence when running. Recording hotkeys still require
+the game to be focused. Back up existing profiles before upgrading.

@@ -15,9 +15,14 @@ namespace Ryujinx.Graphics.OpenGL
     // Experimental same-state geometry stereo with isolated per-eye image storage.
     internal sealed class NativeStereo : IDisposable
     {
+        private static readonly bool OriginalShaderDiagnostic = Environment.GetEnvironmentVariable("RYU_TOTK_ORIGINAL_SHADER_DIAGNOSTIC") == "1" && string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "0100f2c0115b6000", StringComparison.OrdinalIgnoreCase);
         internal static readonly bool Enabled = Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1";
         private static float Separation = ReadFloat("RYU_STEREO_SEPARATION", 0.012f, 0f, 0.1f);
         internal static float Convergence = ReadFloat("RYU_STEREO_CONVERGENCE", 600f, 0f, 10000f);
+        private static float HudPopout;
+        internal static int ShadowProbe;
+        internal static int ShadowProbeProgram;
+        internal static float HudEyeOffset => Separation > 0 ? (CurrentEye == 0 ? 1f : -1f) * HudPopout / 100f : 0;
         internal static bool GeometryPass = true;
         internal static bool TraceFrame;
         internal static bool DisableCharacterShadows;
@@ -81,6 +86,11 @@ namespace Ryujinx.Graphics.OpenGL
                 if (doc.RootElement.TryGetProperty("cache_stereo_resources", out var stereoResources)) CacheStereoResources = stereoResources.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("cache_buffer_bindings", out var bufferBindings)) CacheBufferBindings = bufferBindings.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("cache_render_targets", out var targets)) CacheRenderTargets = targets.ValueKind == System.Text.Json.JsonValueKind.True;
+                HudPopout = doc.RootElement.TryGetProperty("hud_popout_percent", out var hud) && hud.TryGetSingle(out float h) && float.IsFinite(h) ? Math.Clamp(h, 0, 2) : 0;
+                ShadowProbe = doc.RootElement.TryGetProperty("diagnostic_shadow_probe", out var probe) && probe.TryGetInt32(out int probeValue) && probeValue >= 0 && probeValue <= 9 ? probeValue : 0;
+                ShadowProbeProgram = doc.RootElement.TryGetProperty("diagnostic_shadow_program", out var programProbe) && programProbe.TryGetInt32(out int programValue) ? Math.Max(0, programValue) : 0;
+                StereoOutput.Load(doc.RootElement);
+                NativeLeiaOutput.Requested = StereoOutput.Mode == "panel";
                 _settingsStamp = stamp;
                 Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo settings: separation={Separation}, convergence={Convergence}, disableCharacterShadows={DisableCharacterShadows}");
             }
@@ -97,6 +107,7 @@ namespace Ryujinx.Graphics.OpenGL
 
         internal static string Rewrite(string code, ShaderStage stage, ShaderSource[] stages)
         {
+            if (OriginalShaderDiagnostic) return code;
             ShaderStage finalStage = stages.Any(s => s.Stage == ShaderStage.Geometry) ? ShaderStage.Geometry :
                 stages.Any(s => s.Stage == ShaderStage.TessellationEvaluation) ? ShaderStage.TessellationEvaluation : ShaderStage.Vertex;
             if (Enabled && stage == ShaderStage.Fragment)
@@ -104,6 +115,11 @@ namespace Ryujinx.Graphics.OpenGL
                 ShaderSource vertex = stages.FirstOrDefault(s => s.Stage == ShaderStage.Vertex);
                 if (!string.IsNullOrEmpty(vertex.Code))
                 {
+                    code = TotkCharacterThreshold.Rewrite(code);
+                    code = TotkHistogram.Rewrite(code);
+                    code = TotkCharacterLighting.Rewrite(code);
+                    code = TotkShadowFiltering.Rewrite(code);
+                    code = TotkCloudDepth.Rewrite(code, vertex.Code);
                     code = ZeldaStereoReconstruction.Rewrite(code, vertex.Code);
                     code = StereoShadowReconstruction.Rewrite(code, vertex.Code);
                     code = StereoDeferredReconstruction.Rewrite(code, vertex.Code);
@@ -127,9 +143,14 @@ namespace Ryujinx.Graphics.OpenGL
             if (!main.IsMatch(code)) return code;
             string correction = "if (abs(gl_Position.w - 1.0) > 0.0001) gl_Position.x += ryu_geometry_stereo.x * (gl_Position.w - ryu_geometry_stereo.y);\n";
             string projectedVaryings = stage == ShaderStage.Vertex ? StereoProjectedVaryings.Correction(code) : "";
+            if (stage == ShaderStage.Vertex && projectedVaryings.Length == 0) projectedVaryings = TotkCloudDepth.ProjectedCorrection(code);
             if (stage == ShaderStage.Vertex && projectedVaryings.Length == 0) (code, projectedVaryings) = ZeldaStereoEffects.ExtendProjectedCoordinates(code);
             correction += projectedVaryings;
-            bool projectedDepth = false;
+            bool hudProjection = stage == ShaderStage.Vertex && TotkHudProjection.Matches(code);
+            if (hudProjection) correction += "gl_Position.x += ryu_hud_offset * gl_Position.w;\n";
+            if (hudProjection && TotkHudProjection.IsPlainColorOverlay(stages.FirstOrDefault(s => s.Stage == ShaderStage.Fragment).Code))
+                correction = TotkHudProjection.SaveOverlayBounds + correction + TotkHudProjection.CoverOverlayEdges;
+            bool projectedDepth = stage == ShaderStage.Vertex && TotkCloudDepth.Matches(code);
             if (stage == ShaderStage.Vertex)
             {
                 string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(code.Replace("\r\n", "\n"))));
@@ -152,6 +173,7 @@ namespace Ryujinx.Graphics.OpenGL
                     // Preserve the guest instance ID in the doubled-instance path; ordinary draws are unchanged.
                     code = Regex.Replace(code, @"\bgl_InstanceID\b", "(ryu_stereo_layer == -2 ? (gl_InstanceID >> 1) : gl_InstanceID)");
                     correction = correction.Replace("ryu_geometry_stereo.x", "(ryu_geometry_stereo.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
+                    if (hudProjection) correction = correction.Replace("ryu_hud_offset", "(ryu_hud_offset * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
                     if (ArraySampling)
                         correction = correction.Replace("ryu_stereo_projected_varying.x", "(ryu_stereo_projected_varying.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
                     correction += "if (ryu_stereo_layer == -2) gl_Layer = gl_InstanceID & 1; else " +
@@ -188,6 +210,7 @@ namespace Ryujinx.Graphics.OpenGL
                 code = main.Replace(code, "void ryu_geometry_original_main()", 1);
                 code += "\nuniform vec2 ryu_geometry_stereo;\n" + (projectedVaryings.Length > 0 ? "uniform vec2 ryu_stereo_projected_varying;\n" : "") + "void main() { ryu_geometry_original_main();\n" + correction + "}\n";
             }
+            if (hudProjection) code = code.Insert(code.IndexOf("void ryu_geometry_original_main", StringComparison.Ordinal), "uniform float ryu_hud_offset;\n");
             if (projectedDepth) code = code.Replace("ryu_geometry_stereo", "ryu_geometry_stereo_projected");
             Interlocked.Increment(ref _rewritten);
             return StereoArraySampling.Rewrite(code, stage);
@@ -211,13 +234,25 @@ namespace Ryujinx.Graphics.OpenGL
             }
         }
 
+        private static long _nextSettingsPoll;
+        internal static void RefreshOutputSettings()
+        {
+            long now = Environment.TickCount64;
+            if (now < _nextSettingsPoll) return;
+            _nextSettingsPoll = now + 250;
+            ReloadSettings();
+        }
+
         internal void Present(Action<int> renderEye, int width, int height, Action swapBuffers, bool direct = false)
         {
             if (width <= 0 || height <= 0) return;
-            if (!direct) EnsureSize(width, height);
-            long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (_lastPresent != 0) _frameIntervals[_frame % 120] = (now - _lastPresent) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-            _lastPresent = now;
+            if (!direct) EnsureSize(StereoOutput.EyeWidth(width), StereoOutput.EyeHeight(height));
+            if (StereoPerformance.Enabled)
+            {
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (_lastPresent != 0) _frameIntervals[_frame % 120] = (now - _lastPresent) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                _lastPresent = now;
+            }
             try
             {
                 for (int eye = 0; eye < 2; eye++)
@@ -228,13 +263,7 @@ namespace Ryujinx.Graphics.OpenGL
                 SetEye(0);
                 GL.Disable(IndexedEnableCap.ScissorTest, 0);
                 GL.Disable(EnableCap.RasterizerDiscard);
-                for (int eye = 0; !direct && eye < 2; eye++)
-                {
-                    FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, _framebuffers[eye]);
-                    FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, 0);
-                    GL.BlitFramebuffer(0, 0, width, height, eye * (width / 2), 0,
-                        (eye + 1) * (width / 2), height, ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
-                }
+                if (!direct) StereoOutput.Compose(_framebuffers, _width, _height, width, height, 0, recording: true);
                 if (TraceFrame)
                 {
                     string capturePath = Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE");
@@ -252,12 +281,15 @@ namespace Ryujinx.Graphics.OpenGL
                 _frame++;
                 if (_frame % 120 == 0)
                 {
-                    ReloadSettings();
+
                     StereoPerformance.Report();
+                    if (StereoPerformance.Enabled)
+                    {
                     var intervals = (double[])_frameIntervals.Clone();
                     Array.Sort(intervals);
                     Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo pacing ms: median={intervals[60]:F2}, p95={intervals[114]:F2}, max={intervals[119]:F2}");
-                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo SAME FRAME: {_frame} pairs, {SameFrameStereo.DrawPairs} dual commands, {SameFrameStereo.StorageCount} eye allocations, {_rewritten} shaders; {width}x{height}; separation={Separation}, convergence={Convergence}; directOutput={direct}; renderSecondEye={RenderSecondEye}; vertexBindingCache={CacheVertexBindings}; vertexBindSkips={VertexArray.SkippedVertexBinds}; divisorSkips={VertexArray.SkippedDivisorBinds}; indexBindSkips={VertexArray.SkippedIndexBinds}; handoffSpinUs={Ryujinx.Graphics.GAL.Multithreading.ThreadedRenderer.IdleSpinMicroseconds}; commandFlushMs={CommandFlushMilliseconds}; commandFlushes={StereoCommandFlush.Count}; commandFlushCpuMs={StereoCommandFlush.CpuMilliseconds:F2}; alternatingEyes={AlternatingEyes}; framebufferBinds={FramebufferBinding.DrawBinds}; layeredStorage={LayeredStorage}; layeredRendering={LayeredRendering}; layeredDraws={SameFrameStereo.LayeredDrawPairs}; instancedEyes={InstancedRendering}; instancedDraws={SameFrameStereo.InstancedDrawPairs}; arraySampling={ArraySampling}");
+                    Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo SAME FRAME: {_frame} pairs, {SameFrameStereo.DrawPairs} dual commands, {SameFrameStereo.StorageCount} eye allocations, {_rewritten} shaders; {width}x{height}; separation={Separation}, convergence={Convergence}; directOutput={direct}; renderSecondEye={RenderSecondEye}; genericBufferBindSkips={StereoBufferBinding.GenericBindSkips}; vertexBindingCache={CacheVertexBindings}; vertexBindSkips={VertexArray.SkippedVertexBinds}; divisorSkips={VertexArray.SkippedDivisorBinds}; indexBindSkips={VertexArray.SkippedIndexBinds}; handoffSpinUs={Ryujinx.Graphics.GAL.Multithreading.ThreadedRenderer.IdleSpinMicroseconds}; commandFlushMs={CommandFlushMilliseconds}; commandFlushes={StereoCommandFlush.Count}; commandFlushCpuMs={StereoCommandFlush.CpuMilliseconds:F2}; alternatingEyes={AlternatingEyes}; framebufferBinds={FramebufferBinding.DrawBinds}; layeredStorage={LayeredStorage}; layeredRendering={LayeredRendering}; layeredDraws={SameFrameStereo.LayeredDrawPairs}; instancedEyes={InstancedRendering}; instancedDraws={SameFrameStereo.InstancedDrawPairs}; arraySampling={ArraySampling}");
+                    }
                     string capture = Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE");
                     if (!string.IsNullOrWhiteSpace(capture) && File.Exists(Path.Combine(capture, "motion.request")))
                     {
@@ -274,6 +306,8 @@ namespace Ryujinx.Graphics.OpenGL
                 StereoMotionCapture.Frame(width, height);
                 try { _recording.Frame(width, height); }
                 catch (Exception recordingError) { _recording.Dispose(); SbsRecording.Notify("GPU recording stopped: " + recordingError.Message, false); }
+                if (!direct && !StereoOutput.Legacy) StereoOutput.Compose(_framebuffers, _width, _height, width, height, 0, textures: _textures);
+                FramebufferBinding.Bind(FramebufferTarget.Framebuffer, 0);
                 _nativeLeia.Present(width, height);
                 swapBuffers();
             }
@@ -310,6 +344,7 @@ namespace Ryujinx.Graphics.OpenGL
         {
             _recording.Dispose();
             _nativeLeia.Dispose();
+            StereoOutput.Dispose();
             DisposeEyeTargets();
         }
 
@@ -327,5 +362,3 @@ namespace Ryujinx.Graphics.OpenGL
         }
     }
 }
-
-

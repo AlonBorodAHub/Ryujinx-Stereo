@@ -17,7 +17,7 @@ internal static class StereoRecordingUi
     {
         StereoAdjustmentOverlay.Attach(owner);
         // Native OpenGL fullscreen focus can bypass Avalonia's routed key events.
-        // Poll only while this process owns the foreground window.
+        // Recording keys require foreground focus; the controller exit chord does not.
         if (OperatingSystem.IsWindows())
         {
             bool previousStart = false, previousStop = false;
@@ -26,6 +26,19 @@ internal static class StereoRecordingUi
             {
                 GetWindowThreadProcessId(GetForegroundWindow(), out uint foreground);
                 bool focused = foreground == Environment.ProcessId && owner.ViewModel.AppHost != null;
+                if (Ryujinx.Input.HLE.StereoControllerExit.Consume() && owner.ViewModel.AppHost != null)
+                {
+                    // dEPTH owns its cover-before-exit sequence. Never race it.
+                    var frontends = Process.GetProcessesByName("Depth");
+                    bool frontendOwnsExit = frontends.Length != 0;
+                    foreach (var frontend in frontends) frontend.Dispose();
+                    if (!frontendOwnsExit)
+                    {
+                        Ryujinx.Input.HLE.StereoControllerExit.CloseWindowRequested = true;
+                        if (SbsRecording.IsRecording) Stop(owner);
+                        else owner.ViewModel.AppHost?.Stop();
+                    }
+                }
                 bool start = focused && (GetAsyncKeyState(0x78) & 0x8000) != 0;
                 bool stop = focused && (GetAsyncKeyState(0x79) & 0x8000) != 0;
                 if (stop && !previousStop) Stop(owner);

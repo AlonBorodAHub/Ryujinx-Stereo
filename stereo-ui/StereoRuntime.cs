@@ -24,6 +24,14 @@ internal static class StereoRuntime
         if (IsChild)
         {
             string id = StereoProfiles.Normalize(ActiveId);
+            if (id == StereoProfiles.Tears)
+            {
+                // Validated gameplay fixes, independent of diagnostic launchers.
+                Environment.SetEnvironmentVariable("RYU_TOTK_THRESHOLD_WORKAROUND", "1");
+                Environment.SetEnvironmentVariable("RYU_TOTK_HISTOGRAM_TEST", "1");
+                foreach (string diagnostic in new[] { "RYU_STEREO_TRACE", "RYU_STEREO_CAPTURE", "RYU_STEREO_SHADER_DUMP", "RYU_STEREO_PERF", "RYU_STEREO_GPU_PROFILE", "RYU_INPUT_TRACE" })
+                    Environment.SetEnvironmentVariable(diagnostic, null);
+            }
             var profile = StereoProfiles.Load(id);
             Environment.SetEnvironmentVariable("RYU_GEOMETRY_STEREO", StereoProfiles.Enabled(profile) ? "1" : "0");
             Environment.SetEnvironmentVariable("RYU_STEREO_SETTINGS", StereoProfiles.PathFor(id));
@@ -40,7 +48,7 @@ internal static class StereoRuntime
         id = StereoProfiles.Normalize(id);
         // Keep validated game renderers isolated behind one library and shared settings UI.
         // Zelda's shader fixes must not be applied to Mario's shaders.
-        string executable = id == StereoProfiles.Zelda
+        string executable = StereoProfiles.IsZelda(id)
             ? Path.Combine(StereoProfiles.Home, "engines", "zelda", "Ryujinx.exe")
             : Path.Combine(StereoProfiles.Home, "Ryujinx.exe");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable), CreateNoWindow = true };
@@ -49,8 +57,8 @@ internal static class StereoRuntime
         start.Environment["RJ_STEREO_CHILD"] = "1";
         start.Environment["RJ_STEREO_GAME"] = id;
         start.Environment["RYU_STEREO_BACKGROUND_COMPILATION"] = "0";
-        start.Environment["RYU_STEREO_DRIVER_THREADING"] = id == StereoProfiles.Zelda ? "1" : "0";
-        start.Environment["RYU_OPENGL_BUFFER_PREFLUSH"] = id == StereoProfiles.Zelda ? "1" : "0";
+        start.Environment["RYU_STEREO_DRIVER_THREADING"] = StereoProfiles.IsZelda(id) ? "1" : "0";
+        start.Environment["RYU_OPENGL_BUFFER_PREFLUSH"] = StereoProfiles.IsZelda(id) ? "1" : "0";
         string pairedEyes = id is "010015100b514000" or "010028600ebda000" ? "0" : "1";
         start.Environment["RYU_STEREO_LAYERED"] = pairedEyes;
         start.Environment["RYU_STEREO_INSTANCED"] = pairedEyes;
@@ -84,7 +92,7 @@ internal static class StereoRuntime
             var converters = Process.GetProcessesByName("Odyssey3DPlayer");
             try
             {
-                if (converters.Length > 0 && StereoProfiles.Enabled(StereoProfiles.Load(id)))
+                if (converters.Length > 0 && StereoProfiles.Enabled(StereoProfiles.Load(id)) && StereoProfiles.UsesPanel(StereoProfiles.Load(id)))
                     throw new InvalidOperationException("Stop Samsung's video conversion before launching this game. Ryujinx Stereo sends 3D directly to the panel; running both conversion paths can misalign the eyes.");
             }
             finally { foreach (var p in converters) p.Dispose(); }

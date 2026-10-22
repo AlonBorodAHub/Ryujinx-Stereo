@@ -195,6 +195,12 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
         public DiskCacheHostStorage(string basePath)
         {
             if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1") basePath = Path.Combine(basePath, Environment.GetEnvironmentVariable("RYU_STEREO_ARRAY_SAMPLING") == "1" ? "array-sampling-stereo" : Environment.GetEnvironmentVariable("RYU_STEREO_INSTANCED") == "1" ? "instanced-stereo" : "layered-stereo");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1" && string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "0100f2c0115b6000", StringComparison.OrdinalIgnoreCase)) basePath = Path.Combine(basePath, "totk-cloud-botw-projection-v12");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_ORIGINAL_SHADER_DIAGNOSTIC") == "1") basePath = Path.Combine(basePath, "original-shader-diagnostic");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_CHARACTER_LIGHTING_TEST") == "1") basePath = Path.Combine(basePath, "character-lighting-isolation");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_HISTOGRAM_TEST") == "1") basePath = Path.Combine(basePath, "histogram-single-eye");
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_THRESHOLD_WORKAROUND") == "1") basePath = Path.Combine(basePath, "threshold-workaround");
+
             _basePath = basePath;
             _guestStorage = new DiskCacheGuestStorage(basePath);
 
@@ -869,4 +875,3 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
         }
     }
 }
-

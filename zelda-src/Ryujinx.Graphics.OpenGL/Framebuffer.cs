@@ -107,10 +107,11 @@ namespace Ryujinx.Graphics.OpenGL
                 return false;
             }
         }
+        internal bool SmallTraceTarget => _colors[0] is TextureView t && t.Width >= 64 && t.Width < 800;
         internal void TraceOutput(int program, long sequence)
         {
             TextureView view = _colors[0];
-            if (view == null || view.Target != Target.Texture2D || view.Width < 800 || view.Width < view.Height * 1.5f || view.Width > view.Height * 2.1f) return;
+            if (view == null || view.Target != Target.Texture2D || view.Width < 64 || view.Width < view.Height * 1.5f || view.Width > view.Height * 2.1f) return;
             string path = System.Environment.GetEnvironmentVariable("RYU_STEREO_TRACE");
             int width = System.Math.Min(360, view.Width), height = System.Math.Min(480, view.Height);
             int x = (view.Width - width) / 2, y = System.Math.Clamp((int)(view.Height * 0.72f) - height / 2, 0, view.Height - height);

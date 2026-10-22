@@ -1,3 +1,11 @@
+0.5.0 / 2026-10-22
+TOTK 1.0.0, RTX5070, Samsung G90XF, 2x OpenGL stereo, FXAA off.
+User confirmed Link lighting, matching tree shading, cloud cutouts, fade coverage
+and D-pad menu background/flicker corrected. Menu validation requires external
+DynamicFPS1.5.4 + UI Blackscreen Fix1.0.1. These mods are not bundled.
+Background diagnostics disabled and temporary menu probes removed.
+Full-game frame-rate stability and other hardware are unverified.
+
 Ryujinx Stereo 0.4.0 experimental: validation scope, 2026-10-20
 
 New 3D World profile: separate-eye native output; depth 100%, convergence 2250.
@@ -76,3 +84,13 @@ Capture repeats source frames below 60 fps. Display runtime and recording
 FFmpeg executable are external dependencies.
 
 0.4.0 publication: both self-contained Windows engines built; release-binary shadow GPU checks and control regression checks passed. Existing Avalonia warnings remain.
+
+0.5.0 stereo display output / 2026-10-22
+Both Windows x64 engines built and published successfully. Each installed engine
+passed all 96 GPU output cases plus actual-engine presentation and live changes
+between all formats and both eye orders. Coverage includes odd/even dimensions,
+row orientation, full-format eye target sizes, SBS recording composition and
+restoration of graphics state. Profile persistence checks passed for all five
+game IDs. The expanded settings panel rendered and exited successfully.
+These are renderer tests, not new gameplay validation of every game/display.
+HDMI frame packing is not implemented; see docs/DISPLAY-OUTPUT.md.

@@ -1724,7 +1724,7 @@ namespace Ryujinx.Ava.UI.ViewModels
                 AppHost = null;
 
                 await HandleRelaunch();
-                if (Ryujinx.Ava.Stereo.StereoRuntime.IsChild && AppHost == null) ((MainWindow)TopLevel).Close();
+                if ((Ryujinx.Ava.Stereo.StereoRuntime.IsChild || Ryujinx.Input.HLE.StereoControllerExit.CloseWindowRequested) && AppHost == null) ((MainWindow)TopLevel).Close();
             });
 
             RendererHostControl.WindowCreated -= RendererHost_Created;

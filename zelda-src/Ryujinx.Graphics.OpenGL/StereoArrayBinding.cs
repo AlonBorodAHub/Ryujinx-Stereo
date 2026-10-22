@@ -14,6 +14,13 @@ namespace Ryujinx.Graphics.OpenGL
         private static long _deletions;
         internal static void Invalidate(int unit) => _bound?.Remove(unit);
         internal static void Deleted() => Interlocked.Increment(ref _deletions);
+        internal static void BindDirect(int unit, int handle)
+        {
+            // This bind may replace the array target remembered by Bind(),
+            // including unit zero restored without TextureBase.Bind().
+            Invalidate(unit);
+            GL.BindTextureUnit(unit, handle);
+        }
         internal static void Bind(int unit, TextureBase texture)
         {
             if (!NativeStereo.ArraySampling || texture is not TextureView view || view.Target != Target.Texture2D) return;

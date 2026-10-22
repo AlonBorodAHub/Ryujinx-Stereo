@@ -11,6 +11,10 @@ namespace Ryujinx.Graphics.OpenGL
     class Pipeline : IPipeline, IDisposable
     {
         private const int SavedImages = 2;
+        private static readonly bool GuestTextureBarrierTest =
+            Environment.GetEnvironmentVariable("RYU_TOTK_TEXTURE_BARRIER_TEST") == "1" &&
+            string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "0100f2c0115b6000", StringComparison.OrdinalIgnoreCase);
+        private bool _guestTextureBarrierLogged;
 
         private readonly DrawTextureEmulation _drawTexture;
 
@@ -1290,6 +1294,7 @@ namespace Ryujinx.Graphics.OpenGL
             bool stereo = geometry || _framebuffer?.HasStereoTargets == true ||
                 explicitSource?.HasStereoStorage == true || SameFrameStereo.NeedsStereoCompute(_program);
             if (stereo) _framebuffer?.MakeStereoTargets();
+            else if (NativeStereo.TraceFrame) SameFrameStereo.TraceUnpaired(_program);
             return stereo;
         }
 
@@ -1575,11 +1580,33 @@ namespace Ryujinx.Graphics.OpenGL
         public void TextureBarrier()
         {
             GL.MemoryBarrier(MemoryBarrierFlags.TextureFetchBarrierBit);
+            // Diagnostic: guest render-to-texture ordering requires a framebuffer
+            // texture barrier, distinct from shader-image memory visibility.
+            if (GuestTextureBarrierTest && NativeStereo.ShadowProbe == 7)
+            {
+                GL.TextureBarrier();
+                if (!_guestTextureBarrierLogged)
+                {
+                    _guestTextureBarrierLogged = true;
+                    Logger.Notice.Print(LogClass.Gpu, "TOTK guest framebuffer texture barrier diagnostic active.");
+                }
+            }
         }
 
         public void TextureBarrierTiled()
         {
             GL.MemoryBarrier(MemoryBarrierFlags.TextureFetchBarrierBit);
+            // Diagnostic: guest render-to-texture ordering requires a framebuffer
+            // texture barrier, distinct from shader-image memory visibility.
+            if (GuestTextureBarrierTest && NativeStereo.ShadowProbe == 7)
+            {
+                GL.TextureBarrier();
+                if (!_guestTextureBarrierLogged)
+                {
+                    _guestTextureBarrierLogged = true;
+                    Logger.Notice.Print(LogClass.Gpu, "TOTK guest framebuffer texture barrier diagnostic active.");
+                }
+            }
         }
 
         private static unsafe void SetBuffers(ReadOnlySpan<BufferAssignment> buffers, bool isStorage)
@@ -1591,7 +1618,7 @@ namespace Ryujinx.Graphics.OpenGL
                 SetBuffersUncached(changed[..count], isStorage);
                 // Preserve the generic binding implied by the original last assignment,
                 // including when every indexed binding was already correct.
-                if (buffers.Length != 0) GL.BindBuffer(isStorage ? BufferTarget.ShaderStorageBuffer : BufferTarget.UniformBuffer, buffers[^1].Range.Handle.ToInt32());
+                if (buffers.Length != 0) StereoBufferBinding.BindGeneric(isStorage ? BufferTarget.ShaderStorageBuffer : BufferTarget.UniformBuffer, buffers[^1].Range.Handle.ToInt32());
                 return;
             }
             StereoBufferBinding.Invalidate();
@@ -1606,7 +1633,7 @@ namespace Ryujinx.Graphics.OpenGL
                 foreach (BufferAssignment assignment in buffers)
                 {
                     BufferRange range = assignment.Range;
-                    GL.BindBufferRange(target, assignment.Binding, range.Handle.ToInt32(),
+                    StereoBufferBinding.BindRange(target, assignment.Binding, range.Handle.ToInt32(),
                         range.Handle == BufferHandle.Null ? 0 : (nint)range.Offset,
                         range.Handle == BufferHandle.Null ? 0 : range.Size);
                 }
@@ -1633,13 +1660,13 @@ namespace Ryujinx.Graphics.OpenGL
                     GL.BindBuffersRange(target, buffers[index].Binding, count, handles, offsets, sizes);
                     // Multi-bind leaves the generic binding unchanged; preserve the
                     // previous single-bind behavior for later generic buffer operations.
-                    GL.BindBuffer((BufferTarget)target, handles[count - 1]);
+                    StereoBufferBinding.BindGeneric((BufferTarget)target, handles[count - 1]);
                 }
                 else
                     for (int i = index; i < end; i++)
                     {
                         BufferRange range = buffers[i].Range;
-                        GL.BindBufferRange(target, buffers[i].Binding, range.Handle.ToInt32(),
+                        StereoBufferBinding.BindRange(target, buffers[i].Binding, range.Handle.ToInt32(),
                             range.Handle == BufferHandle.Null ? 0 : (nint)range.Offset,
                             range.Handle == BufferHandle.Null ? 0 : range.Size);
                     }
@@ -1741,6 +1768,8 @@ namespace Ryujinx.Graphics.OpenGL
             DrawCount++;
 
             BindUnitZeroForSampling();
+            SameFrameStereo.AuditShadowBindings(_program);
+            SameFrameStereo.TraceDrawState(_program);
         }
 
         private void PostDraw()
@@ -1909,4 +1938,3 @@ namespace Ryujinx.Graphics.OpenGL
         }
     }
 }
-

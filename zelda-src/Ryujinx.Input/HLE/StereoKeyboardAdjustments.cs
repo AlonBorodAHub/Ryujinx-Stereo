@@ -25,12 +25,14 @@ internal sealed class StereoKeyboardAdjustments
         state.SetPressed(GamepadButtonInputId.B, reset);
         return state;
     }
+    // External focus is allowed; owned emulator dialogs remain excluded while editing settings.
+    internal static bool CanAdjust(bool sameProcess, bool ownedWindow) => !sameProcess || !ownedWindow;
     public void Update()
     {
         if (!OperatingSystem.IsWindows()) return;
         IntPtr window = GetForegroundWindow();
         GetWindowThreadProcessId(window, out uint pid);
-        bool active = pid == Environment.ProcessId && GetWindow(window, 4) == IntPtr.Zero;
+        bool active = CanAdjust(pid == Environment.ProcessId, GetWindow(window, 4) != IntPtr.Zero);
         long now=Environment.TickCount64;
         if(now>=_reload){_reload=now+1000;try{_bindings=Array.ConvertAll(StereoKeyboardBindings.Load(),StereoKeyboardBindings.Parse);}catch(Exception e) when(e is System.IO.IOException||e is UnauthorizedAccessException||e is System.Text.Json.JsonException||e is ArgumentException){}}
         int modifiers=(Down(0x11)?1:0)|(Down(0x12)?2:0)|(Down(0x10)?4:0)|((Down(0x5B)||Down(0x5C))?8:0);

@@ -57,7 +57,7 @@ namespace Ryujinx.Graphics.GAL.Multithreading
 
         private int _producerPtr;
         private int _lastProducedPtr;
-        private int _invokePtr;
+        private int _invokePtr = -1;
 
         private int _refProducerPtr;
         private int _refConsumerPtr;
@@ -179,7 +179,10 @@ namespace Ryujinx.Graphics.GAL.Multithreading
                     CommandHelper.RunCommand(command, this, _baseRenderer);
                     HandoffTiming.Command(command[^1], commandStart);
 
-                    if (Interlocked.CompareExchange(ref _invokePtr, -1, commandPtr) == commandPtr)
+                    // Most commands are asynchronous. Avoid an exclusive cache-line
+                    // operation unless a producer is actually waiting for this slot.
+                    if (Volatile.Read(ref _invokePtr) == commandPtr &&
+                        Interlocked.CompareExchange(ref _invokePtr, -1, commandPtr) == commandPtr)
                     {
                         _invokeRun.Set();
                     }
@@ -203,7 +206,7 @@ namespace Ryujinx.Graphics.GAL.Multithreading
             return new TableRef<T>(this, reference);
         }
 
-        internal ref T New<T>() where T : struct
+        internal ref T New<T>() where T : struct, IGALCommand
         {
             while (_producerPtr == (Volatile.Read(ref _consumerPtr) + QueueCount - 1) % QueueCount)
             {
@@ -221,7 +224,7 @@ namespace Ryujinx.Graphics.GAL.Multithreading
             Span<byte> memory = new(_commandQueue, taken * _elementSize, _elementSize);
             ref T result = ref Unsafe.As<byte, T>(ref MemoryMarshal.GetReference(memory));
 
-            memory[^1] = (byte)((IGALCommand)result).CommandType;
+            memory[^1] = (byte)result.CommandType;
 
             return ref result;
         }
@@ -256,8 +259,9 @@ namespace Ryujinx.Graphics.GAL.Multithreading
             if (_usePublishedQueue)
             {
                 // Publish only after the complete command and its references have
-                // been written. A release store replaces two contended count RMWs.
-                Volatile.Write(ref _publishedPtr, _producerPtr);
+                // been written. A full fence is required before checking the waiter;
+                // a release store alone can lose a wakeup on the store/load race.
+                Interlocked.Exchange(ref _publishedPtr, _producerPtr);
                 if (Volatile.Read(ref _waitingForWork) != 0 &&
                     Interlocked.Exchange(ref _waitingForWork, 0) != 0)
                 {
@@ -273,7 +277,7 @@ namespace Ryujinx.Graphics.GAL.Multithreading
         internal void InvokeCommand()
         {
             _invokeRun.Reset();
-            _invokePtr = _lastProducedPtr;
+            Volatile.Write(ref _invokePtr, _lastProducedPtr);
 
             QueueCommand();
 

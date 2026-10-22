@@ -279,6 +279,18 @@ namespace Ryujinx.Input.HLE
         }
 
         private readonly StereoControllerAdjustments _stereoAdjustments = new();
+        private readonly StereoControllerExit _controllerExit = new();
+
+        // Use the already-open physical controller; do not forward background game input.
+        internal void UpdateBackgroundStereoControls()
+        {
+            IGamepad gamepad = _gamepad;
+            if (_config is not StandardControllerInputConfig || gamepad == null || GamepadDriver == null) return;
+            var mapped = gamepad.GetMappedStateSnapshot();
+            long now = Environment.TickCount64;
+            _stereoAdjustments.Process(mapped, now);
+            _controllerExit.Update(mapped.IsPressed(GamepadButtonInputId.LeftStick), mapped.IsPressed(GamepadButtonInputId.RightStick), now);
+        }
 
         public void Update()
         {
@@ -287,7 +299,9 @@ namespace Ryujinx.Input.HLE
 
             if (gamepad != null && GamepadDriver != null)
             {
-                State = _stereoAdjustments.Process(gamepad.GetMappedStateSnapshot(), System.Environment.TickCount64);
+                var mapped = gamepad.GetMappedStateSnapshot();
+                _controllerExit.Update(mapped.IsPressed(GamepadButtonInputId.LeftStick), mapped.IsPressed(GamepadButtonInputId.RightStick), System.Environment.TickCount64);
+                State = _stereoAdjustments.Process(mapped, System.Environment.TickCount64);
 
                 if (_config is StandardControllerInputConfig controllerConfig && controllerConfig.Motion.EnableMotion)
                 {

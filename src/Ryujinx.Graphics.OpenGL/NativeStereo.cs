@@ -64,6 +64,8 @@ namespace Ryujinx.Graphics.OpenGL
                 if (doc.RootElement.TryGetProperty("layered_framebuffer", out var layered)) LayeredRendering = layered.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("instanced_eyes", out var instanced)) InstancedRendering = instanced.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("direct_panel_output", out var panel)) NativeLeiaOutput.Requested = panel.ValueKind == System.Text.Json.JsonValueKind.True;
+                StereoOutput.Load(doc.RootElement);
+                NativeLeiaOutput.Requested = StereoOutput.Mode == "panel";
                 _settingsStamp = stamp;
                 Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo settings: separation={Separation}, convergence={Convergence}, disableCharacterShadows={DisableCharacterShadows}");
             }
@@ -194,10 +196,19 @@ namespace Ryujinx.Graphics.OpenGL
             }
         }
 
+        private static long _nextSettingsPoll;
+        internal static void RefreshOutputSettings()
+        {
+            long now = Environment.TickCount64;
+            if (now < _nextSettingsPoll) return;
+            _nextSettingsPoll = now + 250;
+            ReloadSettings();
+        }
+
         internal void Present(Action<int> renderEye, int width, int height, Action swapBuffers, bool direct = false)
         {
             if (width <= 0 || height <= 0) return;
-            if (!direct) EnsureSize(width, height);
+            if (!direct) EnsureSize(StereoOutput.EyeWidth(width), StereoOutput.EyeHeight(height));
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
             if (_lastPresent != 0) _frameIntervals[_frame % 120] = (now - _lastPresent) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
             _lastPresent = now;
@@ -211,14 +222,7 @@ namespace Ryujinx.Graphics.OpenGL
                 SetEye(0);
                 GL.Disable(IndexedEnableCap.ScissorTest, 0);
                 GL.Disable(EnableCap.RasterizerDiscard);
-                for (int eye = 0; !direct && eye < 2; eye++)
-                {
-                    FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, _framebuffers[eye]);
-                    FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, 0);
-                    int edgeInset = WonderStereoProjection.EdgeInset(width, Separation, Convergence);
-                    GL.BlitFramebuffer(edgeInset, 0, width - edgeInset, height, eye * (width / 2), 0,
-                        (eye + 1) * (width / 2), height, ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Linear);
-                }
+                if (!direct) StereoOutput.Compose(_framebuffers, _width, _height, width, height, WonderStereoProjection.EdgeInset(_width, Separation, Convergence), recording: true);
                 if (TraceFrame)
                 {
                     string capturePath = Environment.GetEnvironmentVariable("RYU_STEREO_CAPTURE");
@@ -235,7 +239,7 @@ namespace Ryujinx.Graphics.OpenGL
                 _frame++;
                 if (_frame % 120 == 0)
                 {
-                    ReloadSettings();
+
                     var intervals = (double[])_frameIntervals.Clone();
                     Array.Sort(intervals);
                     Logger.Notice.Print(LogClass.Gpu, $"GeometryStereo pacing ms: median={intervals[60]:F2}, p95={intervals[114]:F2}, max={intervals[119]:F2}");
@@ -250,6 +254,8 @@ namespace Ryujinx.Graphics.OpenGL
                 FramebufferBinding.Bind(FramebufferTarget.Framebuffer, 0);
                 try { _recording.Frame(width, height); }
                 catch (Exception recordingError) { _recording.Dispose(); SbsRecording.Notify("GPU recording stopped: " + recordingError.Message, false); }
+                if (!direct && !StereoOutput.Legacy) StereoOutput.Compose(_framebuffers, _width, _height, width, height, WonderStereoProjection.EdgeInset(_width, Separation, Convergence), textures: _textures);
+                FramebufferBinding.Bind(FramebufferTarget.Framebuffer, 0);
                 _nativeLeia.Present(width, height);
                 swapBuffers();
             }
@@ -286,6 +292,7 @@ namespace Ryujinx.Graphics.OpenGL
         {
             _recording.Dispose();
             _nativeLeia.Dispose();
+            StereoOutput.Dispose();
             DisposeEyeTargets();
         }
 
@@ -303,4 +310,3 @@ namespace Ryujinx.Graphics.OpenGL
         }
     }
 }
-

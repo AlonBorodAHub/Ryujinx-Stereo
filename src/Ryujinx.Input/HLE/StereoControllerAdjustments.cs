@@ -48,7 +48,7 @@ internal sealed class StereoControllerAdjustments
         {
             var profile = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
             if (profile == null) return state;
-            bool zelda = string.Equals(Path.GetFileNameWithoutExtension(path), "01007ef00011e000", StringComparison.OrdinalIgnoreCase);
+            bool zelda = string.Equals(Path.GetFileNameWithoutExtension(path), "01007ef00011e000", StringComparison.OrdinalIgnoreCase) || string.Equals(Path.GetFileNameWithoutExtension(path), "0100f2c0115b6000", StringComparison.OrdinalIgnoreCase);
             bool mario = string.Equals(Path.GetFileNameWithoutExtension(path), "0100000000010000", StringComparison.OrdinalIgnoreCase);
             double baseline = zelda ? .016224 : mario ? .02028 : .012;
             double separation = Number(profile, "separation", baseline);

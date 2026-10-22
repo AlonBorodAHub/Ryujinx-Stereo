@@ -10,10 +10,12 @@ namespace Ryujinx.Ava.Stereo;
 // Unknown properties are retained when the user changes depth/convergence.
 internal static class StereoProfiles
 {
-    public const string Mario = "0100000000010000";
     public const string World = "010028600ebda000";
     public const string Wonder = "010015100b514000";
+    public const string Mario = "0100000000010000";
     public const string Zelda = "01007ef00011e000";
+    public const string Tears = "0100f2c0115b6000";
+    public static bool IsZelda(string id) => Normalize(id) is Zelda or Tears;
     public static string Home => Path.GetFullPath(Environment.GetEnvironmentVariable("RJ_STEREO_HOME") ?? AppContext.BaseDirectory);
     public static string DirectoryPath => Path.Combine(Home, "profiles");
     public static string Normalize(string id)
@@ -23,8 +25,8 @@ internal static class StereoProfiles
         return (number & ~0x1FFFUL).ToString("x16");
     }
     public static string PathFor(string id) => Path.Combine(DirectoryPath, Normalize(id) + ".json");
-    public static double DefaultSeparation(string id) => Normalize(id) == Zelda ? .016224 : Normalize(id) == Mario ? .02028 : .012;
-    public static double DefaultConvergence(string id) => Normalize(id) == Zelda ? 6 : 600;
+    public static double DefaultSeparation(string id) => IsZelda(id) ? .016224 : Normalize(id) == Mario ? .02028 : .012;
+    public static double DefaultConvergence(string id) => IsZelda(id) ? 6 : 600;
     public static JsonObject Load(string id)
     {
         string path = PathFor(id);
@@ -32,15 +34,16 @@ internal static class StereoProfiles
             return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? throw new InvalidDataException("Stereo profile must be a JSON object.");
         return new JsonObject
         {
-            ["stereo_enabled"] = id == Mario || id == Zelda,
+            ["stereo_enabled"] = id == Mario || IsZelda(id),
             ["separation"] = DefaultSeparation(id), ["convergence"] = DefaultConvergence(id),
-            ["direct_output"] = id == Zelda, ["direct_panel_output"] = true,
+            ["direct_output"] = IsZelda(id), ["direct_panel_output"] = true,
             ["runtime_resolution_scale"] = 1.5, ["alternating_eyes"] = true,
             ["layered_framebuffer"] = true, ["instanced_eyes"] = true
         };
     }
     public static double Number(JsonObject profile, string key, double fallback) =>
         profile[key] is JsonValue value && value.TryGetValue<double>(out double n) && double.IsFinite(n) ? n : fallback;
+    public static bool UsesPanel(JsonObject profile) => profile["output_format"]?.GetValue<string>() is string mode ? mode == "panel" : profile["direct_panel_output"]?.GetValue<bool>() == true;
     public static bool Enabled(JsonObject profile) => profile["stereo_enabled"]?.GetValue<bool>() ?? true;
     public static void Save(string id, bool enabled, double depthPercent, double convergence)
     {

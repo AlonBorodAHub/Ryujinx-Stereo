@@ -49,11 +49,12 @@ namespace Ryujinx.Graphics.OpenGL
             {
                 // Keep the diagnostic capture path intact. Normal presentation
                 // needs only one resample into each half of the final surface.
-                bool direct = NativeStereo.DirectOutput &&
+                NativeStereo.RefreshOutputSettings();
+                bool direct = StereoOutput.Direct && NativeStereo.DirectOutput &&
                     !NativeStereo.TraceFrame &&
                     !CapturePending() &&
                     !TracePending();
-                _nativeStereo.Present(fbo => CopyTextureToFrameBufferRGB(fbo, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, () => { }, direct), _width, _height, swapBuffersCallback, direct);
+                _nativeStereo.Present(fbo => CopyTextureToFrameBufferRGB(fbo, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, () => { }, direct, true), _width, _height, swapBuffersCallback, direct);
             }
             else
                 CopyTextureToFrameBufferRGB(0, GetCopyFramebufferHandleLazy(), (TextureView)texture, crop, swapBuffersCallback);
@@ -87,8 +88,10 @@ namespace Ryujinx.Graphics.OpenGL
             _updateSize = true;
         }
 
-        private void CopyTextureToFrameBufferRGB(int drawFramebuffer, int readFramebuffer, TextureView view, ImageCrop crop, Action swapBuffersCallback, bool directStereo = false)
+        private void CopyTextureToFrameBufferRGB(int drawFramebuffer, int readFramebuffer, TextureView view, ImageCrop crop, Action swapBuffersCallback, bool directStereo = false, bool stereo = false)
         {
+            int outputWidth = stereo ? StereoOutput.EyeWidth(_width) : _width;
+            int outputHeight = stereo ? StereoOutput.EyeHeight(_height) : _height;
             FramebufferBinding.Bind(FramebufferTarget.DrawFramebuffer, drawFramebuffer);
             FramebufferBinding.Bind(FramebufferTarget.ReadFramebuffer, readFramebuffer);
 
@@ -100,7 +103,7 @@ namespace Ryujinx.Graphics.OpenGL
             {
                 TextureView oldView = viewConverted;
 
-                viewConverted = _antiAliasing.Run(viewConverted, _width, _height);
+                viewConverted = _antiAliasing.Run(viewConverted, outputWidth, outputHeight);
 
                 if (viewConverted.Format.IsBgr())
                 {
@@ -161,20 +164,20 @@ namespace Ryujinx.Graphics.OpenGL
                 srcY1 = crop.Bottom;
             }
 
-            float ratioX = crop.IsStretched ? 1.0f : MathF.Min(1.0f, _height * crop.AspectRatioX / (_width * crop.AspectRatioY));
-            float ratioY = crop.IsStretched ? 1.0f : MathF.Min(1.0f, _width * crop.AspectRatioY / (_height * crop.AspectRatioX));
+            float ratioX = crop.IsStretched ? 1.0f : MathF.Min(1.0f, outputHeight * crop.AspectRatioX / (outputWidth * crop.AspectRatioY));
+            float ratioY = crop.IsStretched ? 1.0f : MathF.Min(1.0f, outputWidth * crop.AspectRatioY / (outputHeight * crop.AspectRatioX));
 
-            int dstWidth = (int)(_width * ratioX);
-            int dstHeight = (int)(_height * ratioY);
+            int dstWidth = (int)(outputWidth * ratioX);
+            int dstHeight = (int)(outputHeight * ratioY);
 
-            int dstPaddingX = (_width - dstWidth) / 2;
-            int dstPaddingY = (_height - dstHeight) / 2;
+            int dstPaddingX = (outputWidth - dstWidth) / 2;
+            int dstPaddingY = (outputHeight - dstHeight) / 2;
 
-            int dstX0 = crop.FlipX ? _width - dstPaddingX : dstPaddingX;
-            int dstX1 = crop.FlipX ? dstPaddingX : _width - dstPaddingX;
+            int dstX0 = crop.FlipX ? outputWidth - dstPaddingX : dstPaddingX;
+            int dstX1 = crop.FlipX ? dstPaddingX : outputWidth - dstPaddingX;
 
-            int dstY0 = crop.FlipY ? dstPaddingY : _height - dstPaddingY;
-            int dstY1 = crop.FlipY ? _height - dstPaddingY : dstPaddingY;
+            int dstY0 = crop.FlipY ? dstPaddingY : outputHeight - dstPaddingY;
+            int dstY1 = crop.FlipY ? outputHeight - dstPaddingY : dstPaddingY;
 
             if (ScreenCaptureRequested)
             {
@@ -193,8 +196,8 @@ namespace Ryujinx.Graphics.OpenGL
                 _scalingFilter.Run(
                     viewConverted,
                     _upscaledTexture,
-                    _width,
-                    _height,
+                    outputWidth,
+                    outputHeight,
                     new Extents2D(
                         srcX0,
                         srcY0,
@@ -221,7 +224,7 @@ namespace Ryujinx.Graphics.OpenGL
 
             if (directStereo)
             {
-                int eyeOffset = NativeStereo.CurrentEye * (_width / 2);
+                int eyeOffset = NativeStereo.CurrentEye * (outputWidth / 2);
                 dstX0 = dstX0 / 2 + eyeOffset;
                 dstX1 = dstX1 / 2 + eyeOffset;
             }
@@ -254,7 +257,7 @@ namespace Ryujinx.Graphics.OpenGL
 
             // Set clip control, viewport and the framebuffer to the output to placate overlays and OBS capture.
             GL.ClipControl(ClipOrigin.LowerLeft, ClipDepthMode.NegativeOneToOne);
-            GL.Viewport(0, 0, _width, _height);
+            GL.Viewport(0, 0, outputWidth, outputHeight);
             FramebufferBinding.Bind(FramebufferTarget.Framebuffer, drawFramebuffer);
 
             swapBuffersCallback();
@@ -461,4 +464,3 @@ namespace Ryujinx.Graphics.OpenGL
         }
     }
 }
-

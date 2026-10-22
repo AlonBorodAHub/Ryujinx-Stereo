@@ -70,7 +70,10 @@ namespace Ryujinx.Graphics.OpenGL
                 {
                     if (args.Count < 2) continue;
                     bool integer = function.StartsWith("texelFetch", StringComparison.Ordinal);
-                    args[1] = $"{(integer ? "ivec3" : "vec3")}({args[1]}, ryu_array_eye())";
+                    // Filtered array sampling clamps the layer, but texelFetch does not.
+                    // Shared one-layer vertex data must remain on layer zero in both eyes.
+                    string eye = integer ? $"min(ryu_array_eye(), textureSize({args[0]}, 0).z - 1)" : "ryu_array_eye()";
+                    args[1] = $"{(integer ? "ivec3" : "vec3")}({args[1]}, {eye})";
                 }
                 string replacement = function + "(" + string.Join(", ", args) + ")";
                 if (function == "textureSize") replacement = "(" + replacement + ".xy)";

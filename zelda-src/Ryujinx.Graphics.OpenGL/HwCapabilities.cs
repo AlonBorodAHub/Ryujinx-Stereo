@@ -25,7 +25,17 @@ namespace Ryujinx.Graphics.OpenGL
         private static readonly Lazy<bool> _supportsTextureCompressionRgtc = new(() => HasExtension("GL_EXT_texture_compression_rgtc"));
         private static readonly Lazy<bool> _supportsTextureCompressionS3tc = new(() => HasExtension("GL_EXT_texture_compression_s3tc"));
         private static readonly Lazy<bool> _supportsTextureShadowLod = new(() => HasExtension("GL_EXT_texture_shadow_lod"));
-        private static readonly Lazy<bool> _supportsViewportSwizzle = new(() => HasExtension("GL_NV_viewport_swizzle"));
+        private static readonly Lazy<bool> _supportsViewportSwizzle = new(() =>
+        {
+            if (Environment.GetEnvironmentVariable("RYU_TOTK_VIEWPORT_FALLBACK_TEST") == "1" &&
+                string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "0100f2c0115b6000", StringComparison.OrdinalIgnoreCase))
+            {
+                Ryujinx.Common.Logging.Logger.Notice.Print(Ryujinx.Common.Logging.LogClass.Gpu,
+                    "TOTK diagnostic: viewport Y-flip fallback active; native viewport swizzle disabled.");
+                return false;
+            }
+            return HasExtension("GL_NV_viewport_swizzle");
+        });
 
         private static readonly Lazy<int> _maximumComputeSharedMemorySize = new(() => GetLimit(All.MaxComputeSharedMemorySize));
         private static readonly Lazy<int> _storageBufferOffsetAlignment = new(() => GetLimit(All.ShaderStorageBufferOffsetAlignment));
