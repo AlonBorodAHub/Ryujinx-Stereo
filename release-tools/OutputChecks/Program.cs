@@ -59,7 +59,7 @@ class Checks {
     foreach(int f in frames)GL.DeleteFramebuffer(f);foreach(int t in textures)GL.DeleteTexture(t);
    }
    if(args.Length>0) Integration(args[0]);
-   Console.WriteLine("PASS: 96 GPU cases: six formats, both eye orders, SBS recording, even/odd sizes, eye dimensions, row orientation and graphics state.");
+   Console.WriteLine("PASS: 48 GPU cases: six formats, both eye orders, SBS recording, even/odd sizes, eye dimensions, row orientation and graphics state.");
   } finally { StereoOutput.Dispose(); SDL_GL_DeleteContext(context); SDL_DestroyWindow(window); SDL_Quit(); }
  }
  static void Integration(string directory) {

@@ -19,10 +19,10 @@ Recordings keep the existing SBS format before display weaving, including when t
 
 HDMI frame packing is unavailable. The current SDL/OpenGL window and native Leia bridge do not implement HDMI stereo mode negotiation, stereo swap-chain presentation, or HDMI timing/signaling. A tall top/bottom framebuffer does not provide that functionality. Adding true frame packing requires a native presentation backend and hardware/driver validation.
 
-Validation: the two engines compile and publish for Windows x64. GPU checks cover all six choices, both eye orders, recording layout, odd/even dimensions, row orientation, eye-target dimensions and graphics state (96 cases). Actual-engine tests cover each layout and eye-order transition in both engines. These checks do not establish compatibility with every 3D display, or gameplay performance in all five games.
+Validation: the two engines compile and publish for Windows x64. GPU checks cover all six choices, both eye orders, recording layout, odd/even dimensions, row orientation, eye-target dimensions and graphics state (48 cases). Actual-engine tests cover each layout and eye-order transition in both engines. These checks do not establish compatibility with every 3D display, or gameplay performance in all five games.
 
 Reproduce the GPU checks on Windows with an OpenGL 4.5 GPU and SDL2.dll beside the test executable (or on PATH):
 
     dotnet run --project release-tools/OutputChecks -c Release -- path/to/published/engine
 
-Run once against the library/Mario engine directory and once against engines/zelda. Without an engine argument it runs only the 96 standalone compositor cases.
+Run once against the library/Mario engine directory and once against engines/zelda. Without an engine argument it runs only the 48 standalone compositor cases.

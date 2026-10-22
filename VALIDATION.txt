@@ -87,7 +87,7 @@ FFmpeg executable are external dependencies.
 
 0.5.0 stereo display output / 2026-10-22
 Both Windows x64 engines built and published successfully. Each installed engine
-passed all 96 GPU output cases plus actual-engine presentation and live changes
+passed all 48 GPU output cases plus actual-engine presentation and live changes
 between all formats and both eye orders. Coverage includes odd/even dimensions,
 row orientation, full-format eye target sizes, SBS recording composition and
 restoration of graphics state. Profile persistence checks passed for all five
