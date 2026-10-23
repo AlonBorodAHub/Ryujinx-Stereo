@@ -10,5 +10,6 @@
   "direct_panel_output": true,
   "stereo_enabled": true,
   "default_separation": 0.02028,
-  "default_convergence": 1775.0
+  "default_convergence": 1775.0,
+  "hud_popout_percent": 0
 }

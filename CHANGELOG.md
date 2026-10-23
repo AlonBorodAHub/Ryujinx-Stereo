@@ -1,3 +1,14 @@
+# 0.6.0-experimental - 2026-10-23
+
+- Add Mario Kart 8 Deluxe, Link’s Awakening, Metroid Dread and Kirby profiles.
+- Correct Dread shadow reconstruction and add UI pop-out.
+- Correct Kirby shadow receivers and depth-disabled camera mesh masks that caused dark silhouettes beside the character.
+- Expose per-game UI pop-out beside depth/convergence for all profiles, preserving existing values and adding a zero default for new games.
+- Align dynamically indexed glyph text with button panels in both engines.
+- Preserve existing Wonder, 3D World and Zelda renderer paths; version shader caches for new rewrites.
+- Keep 4K60 SBS recording unchanged. Reported Link’s Awakening recording slowdown did not reproduce in the latest user test; root cause remains unconfirmed.
+- Game-specific 60 fps patches are external and not bundled. Stable whole-game 60 fps remains unverified.
+
 # 0.5.0-experimental - 2026-10-22
 
 - Add TOTK 1.0.0 routing, a 2x stereo profile and HUD pop-out control.

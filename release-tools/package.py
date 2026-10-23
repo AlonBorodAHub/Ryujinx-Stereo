@@ -59,8 +59,8 @@ for item in destination.rglob('*'):
 files = {p.relative_to(destination).as_posix(): {'bytes': p.stat().st_size,
          'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
          for p in sorted(destination.rglob('*')) if p.is_file()}
-manifest = {'name': 'Ryujinx Stereo', 'version': '0.5.0-experimental', 'platform': 'Windows x64',
-            'games': ['Super Mario Odyssey', 'The Legend of Zelda: Breath of the Wild', 'Super Mario Bros. Wonder', "Super Mario 3D World + Bowser's Fury", "The Legend of Zelda: Tears of the Kingdom"],
+manifest = {'name': 'Ryujinx Stereo', 'version': '0.6.0-experimental', 'platform': 'Windows x64',
+            'games': ['Super Mario Odyssey', 'The Legend of Zelda: Breath of the Wild', 'Super Mario Bros. Wonder', "Super Mario 3D World + Bowser's Fury", "The Legend of Zelda: Tears of the Kingdom", "Mario Kart 8 Deluxe", "The Legend of Zelda: Link's Awakening", "Metroid Dread", "Kirby and the Forgotten Land"],
             'baseline_commit': '80ab0f96b95dc13f5bdb9f365a3363d25040e236',
             'external_dependencies': ['LeiaSR display runtime for native output', 'FFmpeg with h264_nvenc for recording'],
             'files': files}

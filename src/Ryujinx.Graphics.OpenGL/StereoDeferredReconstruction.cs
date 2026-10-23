@@ -9,6 +9,8 @@ namespace Ryujinx.Graphics.OpenGL
     {
         internal static string Rewrite(string fragment, string vertex)
         {
+            fragment = KirbyStereoCorrections.Rewrite(fragment);
+            fragment = MetroidDreadReconstruction.Rewrite(fragment);
             if (string.IsNullOrEmpty(vertex)) return fragment;
             var defs = new Dictionary<string, string>();
             foreach (Match m in Regex.Matches(vertex, @"\b(temp_\d+)\s*=\s*([^;]+);")) defs[m.Groups[1].Value] = m.Groups[2].Value;

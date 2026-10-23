@@ -9,5 +9,6 @@
   "layered_framebuffer": false,
   "instanced_eyes": false,
   "default_separation": 0.00168,
-  "default_convergence": 625
+  "default_convergence": 625,
+  "hud_popout_percent": 0
 }

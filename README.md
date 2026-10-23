@@ -1,21 +1,21 @@
 # Ryujinx Stereo
 
-Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, **Super Mario Bros. Wonder**, **Super Mario 3D World + Bowser's Fury**, and **The Legend of Zelda: Tears of the Kingdom**. Both eyes render the same emulated game state.
+Experimental Windows x64 emulator with geometric stereo for **Super Mario Odyssey**, **The Legend of Zelda: Breath of the Wild**, **Super Mario Bros. Wonder**, **Super Mario 3D World + Bowser's Fury**, and **The Legend of Zelda: Tears of the Kingdom**. Additional profiles cover **Mario Kart 8 Deluxe**, **Link’s Awakening**, **Metroid Dread**, and **Kirby and the Forgotten Land**. Both eyes render the same emulated game state.
 
-**[Download 0.5.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.5.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
+**[Download 0.6.0 experimental](https://github.com/AlonBorodAHub/Ryujinx-Stereo/releases/tag/v0.6.0-experimental)** · [Changes](CHANGELOG.md) · [Build instructions](release-tools/BUILDING.txt)
 
 ## Setup
 
 1. Extract the entire ZIP to a writable folder and run **Ryujinx Stereo.exe**. It opens the normal game library in a window with menus visible.
 2. Supply your own games, console keys and firmware. Configure your controller in Options > Settings > Input and add your games folder. Portable data starts with a clean keyboard configuration.
 3. Double-click a supported game. The library selects that game's renderer and stereo profile. Close gameplay to return to the library.
-4. Open **Stereo 3D > Depth & convergence** or press **F6** to adjust depth and convergence. Settings are stored in `profiles/<title-id>.json` and reload during play. F11 toggles fullscreen.
+4. Open **Stereo 3D > Depth & convergence** or press **F6** to adjust depth, convergence and UI pop-out. Settings are stored in `profiles/<title-id>.json` and reload during play. F11 toggles fullscreen.
 
 Stereo requires OpenGL. Defaults include 1.5× internal rendering, FXAA and a hidden console. Configure physical controllers locally; the tested controller stopped drifting at left/right stick deadzones of 0.32/0.20.
 
 ## Display output
 
-F6 now offers per-game direct panel, half/full side-by-side, half/full over-under and row-interlaced output, plus eye swapping for all five supported games. See [display setup and limitations](docs/DISPLAY-OUTPUT.md). HDMI frame packing requires a separate native presentation backend and is unavailable.
+F6 now offers per-game direct panel, half/full side-by-side, half/full over-under and row-interlaced output, plus eye swapping for all nine supplied game profiles. See [display setup and limitations](docs/DISPLAY-OUTPUT.md). HDMI frame packing requires a separate native presentation backend and is unavailable.
 
 The supplied profiles enable direct LeiaSR panel output, tested on a Samsung Odyssey 3D G90XF. Install the display's supported LeiaSR runtime and make its runtime DLL directory available on PATH before launch. Our bridge DLL and source are included; the proprietary LeiaSR SDK/runtime are not bundled.
 
@@ -128,3 +128,9 @@ Depth/convergence keyboard and controller chords now work when another window
 is focused. Hold both sticks (L3 + R3) to request emulator exit; dEPTH retains
 ownership of its own exit sequence when running. Recording hotkeys still require
 the game to be focused. Back up existing profiles before upgrading.
+
+## 0.6.0 gameplay updates
+
+Kirby and Dread include title-specific shadow receiver corrections. Kirby also corrects depth-disabled camera mesh masks that caused dark character silhouettes. F6 exposes per-game UI pop-out for every profile, including dynamically indexed text, with zero restoring screen depth. HUD compatibility still needs validation for each new game and menu.
+
+Kirby’s tested setup used a separately obtained version-matched 60 fps patch. No game modification is bundled. A warmed stationary scene reached 60 stereo pairs/s; first-use shader hitches and heavier areas remain possible. Link’s Awakening recording slowdown was reported but did not reproduce in the latest same-scene test; no speculative recording optimization is included.

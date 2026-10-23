@@ -1,4 +1,4 @@
-Building Ryujinx Stereo 0.4.0 experimental (Windows x64)
+Building Ryujinx Stereo 0.6.0 experimental (Windows x64)
 
 Use .NET SDK 9.0.319 or compatible .NET 9 SDK. Restore uses nuget.org.
 From the repository root:

@@ -201,6 +201,7 @@ namespace Ryujinx.Graphics.Gpu.Shader.DiskCache
             if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_HISTOGRAM_TEST") == "1") basePath = Path.Combine(basePath, "histogram-single-eye");
             if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_TOTK_THRESHOLD_WORKAROUND") == "1") basePath = Path.Combine(basePath, "threshold-workaround");
 
+            if (!string.IsNullOrEmpty(basePath) && Environment.GetEnvironmentVariable("RYU_GEOMETRY_STEREO") == "1") basePath = Path.Combine(basePath, "shared-ui-popout-v2");
             _basePath = basePath;
             _guestStorage = new DiskCacheGuestStorage(basePath);
 

@@ -12,6 +12,7 @@ internal static class StereoProfiles
 {
     public const string World = "010028600ebda000";
     public const string Wonder = "010015100b514000";
+    public const string MarioKart = "0100152000022000";
     public const string Mario = "0100000000010000";
     public const string Zelda = "01007ef00011e000";
     public const string Tears = "0100f2c0115b6000";
@@ -25,8 +26,14 @@ internal static class StereoProfiles
         return (number & ~0x1FFFUL).ToString("x16");
     }
     public static string PathFor(string id) => Path.Combine(DirectoryPath, Normalize(id) + ".json");
-    public static double DefaultSeparation(string id) => IsZelda(id) ? .016224 : Normalize(id) == Mario ? .02028 : .012;
-    public static double DefaultConvergence(string id) => IsZelda(id) ? 6 : 600;
+    public static double DefaultSeparation(string id) => Normalize(id) == "010093801237c000" ? DreadDefault(id, "default_separation", .012) : IsZelda(id) ? .016224 : Normalize(id) == Mario ? .02028 : Normalize(id) == MarioKart ? .006 : .012;
+    public static double DefaultConvergence(string id) => Normalize(id) == "010093801237c000" ? DreadDefault(id, "default_convergence", 600) : IsZelda(id) ? 6 : 600;
+    private static double DreadDefault(string id, string key, double fallback)
+    {
+        string path = PathFor(id);
+        if (!File.Exists(path)) return fallback;
+        return Number(JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject(), key, fallback);
+    }
     public static JsonObject Load(string id)
     {
         string path = PathFor(id);
@@ -34,9 +41,10 @@ internal static class StereoProfiles
             return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? throw new InvalidDataException("Stereo profile must be a JSON object.");
         return new JsonObject
         {
-            ["stereo_enabled"] = id == Mario || IsZelda(id),
+            ["stereo_enabled"] = id == Mario || id == MarioKart || IsZelda(id),
             ["separation"] = DefaultSeparation(id), ["convergence"] = DefaultConvergence(id),
             ["direct_output"] = IsZelda(id), ["direct_panel_output"] = true,
+            ["hud_popout_percent"] = 0,
             ["runtime_resolution_scale"] = 1.5, ["alternating_eyes"] = true,
             ["layered_framebuffer"] = true, ["instanced_eyes"] = true
         };

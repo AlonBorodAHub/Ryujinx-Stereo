@@ -21,6 +21,8 @@ namespace Ryujinx.Graphics.OpenGL
         internal static bool GeometryPass = true;
         internal static bool TraceFrame;
         internal static bool DisableCharacterShadows;
+        private static float KartHudPopout;
+        internal static float KartHudEyeOffset => Enabled && Separation > 0 ? (CurrentEye == 0 ? 1f : -1f) * KartHudPopout / 100f : 0;
         internal static bool DirectOutput = true;
         internal static bool AlternatingEyes;
         internal static readonly bool LayeredStorage = Environment.GetEnvironmentVariable("RYU_STEREO_LAYERED") == "1";
@@ -58,6 +60,7 @@ namespace Ryujinx.Graphics.OpenGL
                 using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
                 if (doc.RootElement.TryGetProperty("separation", out var s) && s.TryGetSingle(out float separation) && float.IsFinite(separation)) Separation = Math.Clamp(separation, 0, 0.1f);
                 if (doc.RootElement.TryGetProperty("convergence", out var c) && c.TryGetSingle(out float convergence) && float.IsFinite(convergence)) Convergence = Math.Clamp(convergence, 0, 10000f);
+                KartHudPopout = doc.RootElement.TryGetProperty("hud_popout_percent", out var kartHud) && kartHud.TryGetSingle(out float kh) && float.IsFinite(kh) ? Math.Clamp(kh, 0, (string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "01006bb00c6f0000", StringComparison.OrdinalIgnoreCase) || string.Equals(Environment.GetEnvironmentVariable("RJ_STEREO_GAME"), "010093801237c000", StringComparison.OrdinalIgnoreCase)) ? 5 : 2) : 0;
                 DisableCharacterShadows = doc.RootElement.TryGetProperty("disable_character_shadows", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("direct_output", out var output)) DirectOutput = output.ValueKind == System.Text.Json.JsonValueKind.True;
                 if (doc.RootElement.TryGetProperty("alternating_eyes", out var alternating)) AlternatingEyes = alternating.ValueKind == System.Text.Json.JsonValueKind.True;
@@ -112,9 +115,22 @@ namespace Ryujinx.Graphics.OpenGL
             string correction = "if (abs(gl_Position.w - 1.0) > 0.0001) gl_Position.x += ryu_geometry_stereo.x * (gl_Position.w - ryu_geometry_stereo.y);\n";
             bool wonderCamera = stage == ShaderStage.Vertex && WonderStereoProjection.Enabled && WonderStereoProjection.Matches(code);
             if (wonderCamera) correction = WonderStereoProjection.GetCorrection(code);
-            string projectedVaryings = stage == ShaderStage.Vertex ? StereoProjectedVaryings.Correction(code) : "";
+            string kirbyVaryings = stage == ShaderStage.Vertex ? KirbyStereoCorrections.ProjectedVaryings(code) : "";
+            string projectedVaryings = kirbyVaryings.Length > 0 ? kirbyVaryings : stage == ShaderStage.Vertex ? StereoProjectedVaryings.Correction(code) : "";
             correction += projectedVaryings;
-            bool projectedDepth = wonderCamera;
+            bool kartHudProjection = stage == ShaderStage.Vertex && MarioKartHudProjection.Matches(code);
+            if (kartHudProjection)
+            {
+                // Keep full-bleed panes covering the screen after crossed-disparity
+                // translation. Only vertices already at the viewport edge expand;
+                // interior icons and the separate glyph path retain their exact shift.
+                correction = (MarioKartHudProjection.Pane(code) || SharedHudProjection.Pane(code))
+                    ? "float ryu_kart_edge = abs(gl_Position.x) >= abs(gl_Position.w) * 0.9999 ? sign(gl_Position.x) : 0.0;\n" +
+                      "gl_Position.x += (ryu_kart_hud_offset + ryu_kart_edge * abs(ryu_kart_hud_offset)) * gl_Position.w;\n"
+                    : "gl_Position.x += ryu_kart_hud_offset * gl_Position.w;\n";
+            }
+            if (kartHudProjection && MetroidDreadHudProjection.Matches(code)) correction = MetroidDreadHudProjection.Correction;
+            bool projectedDepth = wonderCamera || kirbyVaryings.Length > 0 || (stage == ShaderStage.Vertex && KirbyStereoCorrections.CameraMesh(code));
             if (stage == ShaderStage.Vertex)
             {
                 string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(code.Replace("\r\n", "\n"))));
@@ -137,6 +153,8 @@ namespace Ryujinx.Graphics.OpenGL
                     // Preserve the guest instance ID in the doubled-instance path; ordinary draws are unchanged.
                     code = Regex.Replace(code, @"\bgl_InstanceID\b", "(ryu_stereo_layer == -2 ? (gl_InstanceID >> 1) : gl_InstanceID)");
                     correction = correction.Replace("ryu_geometry_stereo.x", "(ryu_geometry_stereo.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
+                    if (kartHudProjection)
+                        correction = correction.Replace("ryu_kart_hud_offset", "(ryu_kart_hud_offset * (ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0 ? -1.0 : 1.0))");
                     if (ArraySampling)
                         correction = correction.Replace("ryu_stereo_projected_varying.x", "(ryu_stereo_projected_varying.x * ((ryu_stereo_layer == -2 && (gl_InstanceID & 1) != 0) ? -1.0 : 1.0))");
                     correction += "if (ryu_stereo_layer == -2) gl_Layer = gl_InstanceID & 1; else " +
@@ -173,6 +191,7 @@ namespace Ryujinx.Graphics.OpenGL
                 code = main.Replace(code, "void ryu_geometry_original_main()", 1);
                 code += "\nuniform vec2 ryu_geometry_stereo;\n" + (projectedVaryings.Length > 0 ? "uniform vec2 ryu_stereo_projected_varying;\n" : "") + "void main() { ryu_geometry_original_main();\n" + correction + "}\n";
             }
+            if (kartHudProjection) code = code.Insert(code.IndexOf("void ryu_geometry_original_main", StringComparison.Ordinal), "uniform float ryu_kart_hud_offset;\n");
             if (projectedDepth) code = code.Replace("ryu_geometry_stereo", "ryu_geometry_stereo_projected");
             Interlocked.Increment(ref _rewritten);
             return StereoArraySampling.Rewrite(code, stage);

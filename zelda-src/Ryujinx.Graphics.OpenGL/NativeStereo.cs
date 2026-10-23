@@ -146,7 +146,7 @@ namespace Ryujinx.Graphics.OpenGL
             if (stage == ShaderStage.Vertex && projectedVaryings.Length == 0) projectedVaryings = TotkCloudDepth.ProjectedCorrection(code);
             if (stage == ShaderStage.Vertex && projectedVaryings.Length == 0) (code, projectedVaryings) = ZeldaStereoEffects.ExtendProjectedCoordinates(code);
             correction += projectedVaryings;
-            bool hudProjection = stage == ShaderStage.Vertex && TotkHudProjection.Matches(code);
+            bool hudProjection = stage == ShaderStage.Vertex && (TotkHudProjection.Matches(code) || SharedHudProjection.Matches(code));
             if (hudProjection) correction += "gl_Position.x += ryu_hud_offset * gl_Position.w;\n";
             if (hudProjection && TotkHudProjection.IsPlainColorOverlay(stages.FirstOrDefault(s => s.Stage == ShaderStage.Fragment).Code))
                 correction = TotkHudProjection.SaveOverlayBounds + correction + TotkHudProjection.CoverOverlayEdges;

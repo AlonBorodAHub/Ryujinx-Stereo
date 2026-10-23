@@ -1,3 +1,6 @@
+0.6.0 validation (2026-10-23)
+User confirmed Dread shadows, Kirby shadows and silhouette correction, and smooth Kirby movement. Shared HUD GPU tests:588 cases per renderer including24font cases,52HUDvariants;734nonHUD shaders excluded.786captured Kirby programs compile/link.816receiver GPU cases recover expected positions across both eye signs and signed-depth conventions. Final text-to-panel visual confirmation is pending. No full-game or all-menu guarantee. Kirby60fps requires an external matching patch; stationary warm scene60pairs/sec, shader hitches observed. LinksAwakening F9 slowdown not reproduced in latest user test. Diagnostic captures and experimental persistent recording readback are excluded.
+
 0.5.0 / 2026-10-22
 TOTK 1.0.0, RTX5070, Samsung G90XF, 2x OpenGL stereo, FXAA off.
 User confirmed Link lighting, matching tree shading, cloud cutouts, fade coverage

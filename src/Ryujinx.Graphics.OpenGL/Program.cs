@@ -12,6 +12,8 @@ namespace Ryujinx.Graphics.OpenGL
     class Program : IProgram
     {
         private const int MaxShaderLogLength = 2048;
+        private int _kartHudLocation = -2;
+        private float _kartHudValue = float.NaN;
 
         public int Handle { get; private set; }
 
@@ -221,6 +223,12 @@ namespace Ryujinx.Graphics.OpenGL
         internal void ApplyNativeStereo(bool worldDraw, Image.TextureBase unitZero = null)
         {
             if (!NativeStereo.Enabled) return;
+            if (_kartHudLocation == -2) _kartHudLocation = GL.GetUniformLocation(Handle, "ryu_kart_hud_offset");
+            if (_kartHudLocation >= 0 && _kartHudValue != NativeStereo.KartHudEyeOffset)
+            {
+                _kartHudValue = NativeStereo.KartHudEyeOffset;
+                GL.ProgramUniform1(Handle, _kartHudLocation, _kartHudValue);
+            }
             ResolveStereoLocation();
             if (NativeStereo.ArraySampling)
             {

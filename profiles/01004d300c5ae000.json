@@ -1,0 +1,17 @@
+{
+  "stereo_enabled": true,
+  "separation": 0.006719999999999999,
+  "convergence": 50,
+  "default_separation": 0.006719999999999999,
+  "default_convergence": 50,
+  "disable_character_shadows": false,
+  "direct_output": false,
+  "direct_panel_output": true,
+  "output_format": "panel",
+  "swap_eyes": false,
+  "runtime_resolution_scale": 1.5,
+  "alternating_eyes": true,
+  "layered_framebuffer": true,
+  "instanced_eyes": true,
+  "hud_popout_percent": 0.5
+}
